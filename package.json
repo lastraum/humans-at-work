@@ -1,0 +1,25 @@
+{
+  "name": "humans-at-work",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "generate:floor": "node scripts/generate-floor-plate.mjs",
+    "vendor:assets": "./scripts/vendor-claw3d-assets.sh"
+  },
+  "dependencies": {
+    "@dcl/crypto": "^3.6.0",
+    "decentraland-crypto-fetch": "^2.0.1",
+    "livekit-client": "^2.22.3",
+    "livekit-server-sdk": "^2.19.0",
+    "three": "^0.170.0",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/three": "^0.170.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.3"
+  }
+}
