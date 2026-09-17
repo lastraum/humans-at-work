@@ -66,14 +66,17 @@
           <div id="mac-account-in" hidden>
             <p class="mac-hint">Signed in as <b id="mac-account-email"></b></p>
             <div id="mac-office-ad">
-              <p class="mac-hint">Office window ad — shown on your two exterior windows while you are on shift. Cubicles and interior offices have no billboard.</p>
+              <p class="mac-hint">Office window ad — shown on the two panes to the right of your door while you are on shift.</p>
               <label class="mac-check"><input type="checkbox" id="mac-ad-enabled" /> Show window ad</label>
               <div id="mac-ad-drop" class="mac-ad-drop" tabindex="0">
                 <input id="mac-ad-file" type="file" accept="image/*" hidden />
                 <img id="mac-ad-preview" alt="" hidden />
                 <span id="mac-ad-drop-label">Drop an image or click to choose</span>
               </div>
-              <p class="mac-hint" id="mac-ad-hint">Images are resized to 512px on the long side.</p>
+              <span class="mac-field-row">
+                <button type="button" id="mac-ad-save" disabled>Save</button>
+              </span>
+              <p class="mac-hint" id="mac-ad-hint">Pick or drop an image, then Save. Images are resized to 512px on the long side.</p>
             </div>
             <button type="button" id="mac-logout">Sign out</button>
           </div>
