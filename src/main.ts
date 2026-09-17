@@ -457,21 +457,6 @@ loadPlate()
         el.hidden = !label;
         el.dataset.busy = label.startsWith("In use") ? "1" : "0";
       }
-      for (const child of librariesRoot.children) {
-        const lib = child.userData?.library as { id?: string } | undefined;
-        if (!lib?.id) continue;
-        child.userData.confLabel = "Library";
-        let el = badgeById.get(lib.id);
-        if (!el) {
-          el = document.createElement("div");
-          el.className = "conf-badge lib-badge";
-          badgeLayer.appendChild(el);
-          badgeById.set(lib.id, el);
-        }
-        el.textContent = "Library";
-        el.hidden = false;
-        el.dataset.busy = "0";
-      }
     };
     projectConfBadges = () => {
       if (editor.enabled()) {
@@ -498,10 +483,6 @@ loadPlate()
       for (const child of conferencesRoot.children) {
         const conf = child.userData?.conference as { id?: string } | undefined;
         if (conf?.id) projectBadge(child, conf.id);
-      }
-      for (const child of librariesRoot.children) {
-        const lib = child.userData?.library as { id?: string } | undefined;
-        if (lib?.id) projectBadge(child, lib.id);
       }
     };
     confHoverLabel = (col, row) => {
