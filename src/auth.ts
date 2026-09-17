@@ -7,6 +7,13 @@ export type AuthUser = {
   color: string;
 };
 
+export type OfficeAdProfile = {
+  enabled: boolean;
+  hasImage: boolean;
+  rev: number;
+  url?: string;
+};
+
 export type AuthConfig = {
   googleClientId: string | null;
   mailer: boolean;
@@ -68,17 +75,29 @@ export async function restoreAccount(): Promise<{
   token: string;
   address: string | null;
   blocked: string[];
+  officeAd?: OfficeAdProfile;
 } | null> {
   const token = readToken();
   if (!token) return null;
-  const data = await authFetch<{ user: AuthUser; address: string | null; blocked?: string[] }>("/__auth/me", {
+  const data = await authFetch<{
+    user: AuthUser;
+    address: string | null;
+    blocked?: string[];
+    officeAd?: OfficeAdProfile;
+  }>("/__auth/me", {
     token,
   });
   if (!data.ok) {
     clearToken();
     return null;
   }
-  return { user: data.user, token, address: data.address ?? null, blocked: data.blocked ?? [] };
+  return {
+    user: data.user,
+    token,
+    address: data.address ?? null,
+    blocked: data.blocked ?? [],
+    officeAd: data.officeAd,
+  };
 }
 
 export async function startEmailCode(email: string) {
@@ -136,4 +155,15 @@ export async function saveBlock(id: string, on: boolean) {
     method: "POST",
     body: { id },
   });
+}
+
+export async function saveOfficeAd(opts: { enabled?: boolean; image?: string }) {
+  return authFetch<{ officeAd: OfficeAdProfile }>("/__auth/office-ad", {
+    method: "POST",
+    body: opts,
+  });
+}
+
+export async function fetchOfficeAd() {
+  return authFetch<{ officeAd: OfficeAdProfile }>("/__auth/office-ad");
 }

@@ -194,6 +194,7 @@ function stampInstance(
   group.userData.cubicle = kind === "cubicle" ? instance : undefined;
   group.userData.conference = kind === "conference" ? instance : undefined;
   group.userData.recreation = kind === "recreation" ? instance : undefined;
+  group.userData.hasExteriorWindows = kind === "office" && officeWindowFacesOutside(plate, instance);
   const [wx, , wz] = officeWorldCenter(instance, plate);
   group.position.set(wx, 0, wz);
   group.rotation.y = ROOM_ROT_Y[instance.rot] ?? 0;
@@ -383,6 +384,7 @@ export function syncTemplatedCells(
       group.userData.cubicle = kind === "cubicle" ? instance : undefined;
       group.userData.conference = kind === "conference" ? instance : undefined;
       group.userData.recreation = kind === "recreation" ? instance : undefined;
+      group.userData.hasExteriorWindows = kind === "office" && officeWindowFacesOutside(plate, instance);
       continue;
     }
     stampInstance(root, instance, template, furnitureTemplate, plate, kind);

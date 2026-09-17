@@ -4,6 +4,7 @@ import {
   type Claim,
   type ConferenceReservation,
   type ClientMsg,
+  type OfficeAd,
   type Peer,
   type Pose,
   type Privacy,
@@ -16,7 +17,8 @@ export type RoomHandlers = {
   identity: Identity;
   getToken?: () => string;
   getPose: () => Pose;
-  onWelcome: (peers: Peer[], self: Peer, claims: Claim[], blocked?: string[], blockedBy?: string[]) => void;
+  onWelcome: (peers: Peer[], self: Peer, claims: Claim[], blocked?: string[], blockedBy?: string[], officeAds?: OfficeAd[]) => void;
+  onOfficeAd?: (deskId: string, peerId: string, ad: OfficeAd | null) => void;
   onJoin: (peer: Peer) => void;
   onLeave: (id: string) => void;
   onMove: (id: string, x: number, y: number, facing?: number) => void;
@@ -80,7 +82,7 @@ export function connectRoom(opts: RoomHandlers) {
   const handle = (msg: ServerMsg) => {
     if (msg.type === "welcome") {
       peers = 1 + msg.peers.length;
-      opts.onWelcome(msg.peers, msg.self, msg.claims ?? [], msg.blocked ?? [], msg.blockedBy ?? []);
+      opts.onWelcome(msg.peers, msg.self, msg.claims ?? [], msg.blocked ?? [], msg.blockedBy ?? [], msg.officeAds);
       opts.onReservations?.(msg.reservations ?? []);
       status();
       return;
@@ -152,6 +154,10 @@ export function connectRoom(opts: RoomHandlers) {
     }
     if (msg.type === "cancel-reserve") {
       opts.onCancelReserve?.(msg.id);
+      return;
+    }
+    if (msg.type === "office-ad") {
+      opts.onOfficeAd?.(msg.deskId, msg.peerId, msg.ad);
       return;
     }
     if (msg.type === "error") {
@@ -241,6 +247,9 @@ export function connectRoom(opts: RoomHandlers) {
     },
     sendBlock(id: string, on: boolean) {
       send(on ? { type: "block", id } : { type: "unblock", id });
+    },
+    sendOfficeAd(enabled: boolean) {
+      send({ type: "office-ad", enabled });
     },
     identify() {
       hello();

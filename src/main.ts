@@ -18,14 +18,17 @@ import { elevatorSpawn, ensureGridDefaults, kindAt, sidewalkSpawn, spreadConfere
 import {
   bindSessionWallet,
   fetchAuthConfig,
+  fetchOfficeAd,
   loginWithGoogle,
   logoutAccount,
   readToken,
   restoreAccount,
   saveAccountName,
   saveBlock,
+  saveOfficeAd,
   startEmailCode,
   verifyEmailCode,
+  type OfficeAdProfile,
 } from "./auth";
 import { dropSessionWallet, ensureGuestWallet, ensureSessionWallet } from "./dcl/guestWallet";
 import { DCL_WORLD } from "./dcl/worldHandshake";
@@ -47,7 +50,8 @@ import {
   pickConferenceGroup,
   ptDayKey,
 } from "./conferenceReserve";
-import type { ConferenceReservation } from "./protocol";
+import { compressOfficeAd } from "./officeAdImage";
+import type { ConferenceReservation, OfficeAd } from "./protocol";
 import { connectWorldChat } from "./worldChat";
 import type { Avatar, FloorPlate } from "./types";
 
@@ -297,6 +301,11 @@ loadPlate()
     selfId = identity.id;
     selfName = identity.name;
     selfSignedIn = Boolean(identity.email);
+    let officeAdState: OfficeAdProfile = session?.officeAd ?? {
+      enabled: false,
+      hasImage: false,
+      rev: 0,
+    };
 
     const spawn = elevatorSpawn(plate);
     const youAvatar: Avatar = {
@@ -393,6 +402,14 @@ loadPlate()
       paintFloorRoster();
     };
 
+    const applyDeskAd = (deskId: string, peerId: string, ad: OfficeAd | null) => {
+      const claim = desks.claimOf(deskId);
+      if (!claim || claim.peerId !== peerId) return;
+      if (ad?.enabled && ad.url) claim.officeAd = ad;
+      else delete claim.officeAd;
+      desks.apply(claim);
+    };
+
     let reservations: ConferenceReservation[] = [];
     let confReserve: ReturnType<typeof attachConferenceReserve> | null = null;
     const badgeLayer = document.createElement("div");
@@ -415,6 +432,7 @@ loadPlate()
           badgeById.set(conf.id, el);
         }
         el.textContent = label;
+        el.hidden = !label;
         el.dataset.busy = label.startsWith("In use") ? "1" : "0";
       }
     };
@@ -429,7 +447,7 @@ loadPlate()
         const conf = child.userData?.conference as { id?: string } | undefined;
         if (!conf?.id) continue;
         const el = badgeById.get(conf.id);
-        if (!el) continue;
+        if (!el || el.hidden) continue;
         scratchBox.setFromObject(child);
         scratchBox.getCenter(scratchVec);
         scratchVec.y = scratchBox.max.y + 0.15;
@@ -446,7 +464,8 @@ loadPlate()
     confHoverLabel = (col, row) => {
       const conf = conferenceAtCell(plate, col, row);
       if (!conf) return null;
-      return `conference · ${nextBookingLabel(reservations, conf.id)}`;
+      const label = nextBookingLabel(reservations, conf.id);
+      return label ? `conference · ${label}` : "conference";
     };
 
     const room = connectRoom({
@@ -454,7 +473,7 @@ loadPlate()
       identity,
       getToken: () => readToken(),
       getPose: () => playerCtl?.pose() ?? youAvatar,
-      onWelcome: (peers, _self, claims, mineBlocked, mineBlockedBy) => {
+      onWelcome: (peers, _self, claims, mineBlocked, mineBlockedBy, officeAds) => {
         if (mineBlocked?.length) {
           blocked = new Set(mineBlocked);
           writeBlocked(mineBlocked);
@@ -462,6 +481,7 @@ loadPlate()
         blockedBy = new Set(mineBlockedBy ?? []);
         for (const peer of peers) remotes.spawn(peer);
         desks.applyAll(claims);
+        for (const ad of officeAds ?? []) applyDeskAd(ad.deskId, ad.peerId, ad);
         paintFloorRoster();
         syncMacDesk();
         if (welcomed) return;
@@ -524,6 +544,9 @@ loadPlate()
         desks.release(deskId);
         paintFloorRoster();
         syncMacDesk();
+      },
+      onOfficeAd: (deskId, peerId, ad) => {
+        applyDeskAd(deskId, peerId, ad);
       },
       onChat: (id, name, text, channel, deskId) => {
         if (isMuted(id)) return;
@@ -597,7 +620,7 @@ loadPlate()
     });
     const openConference = (conf: { id: string; col: number; row: number; cols?: number; rows?: number }) => {
       confReserve!.open(conf as any);
-      status.textContent = nextBookingLabel(reservations, conf.id);
+      status.textContent = nextBookingLabel(reservations, conf.id) || "conference";
     };
 
     playerCtl = attachPlayer({
@@ -966,7 +989,7 @@ loadPlate()
       const wallet = await ensureSessionWallet(token, true);
       await bindSessionWallet(wallet.address);
       guest = wallet;
-      session = { user, token, address: wallet.address, blocked: [...blocked] };
+      session = { user, token, address: wallet.address, blocked: [...blocked], officeAd: officeAdState };
       identity.id = user.id;
       identity.name = sanitizeName(user.name) || identity.name;
       identity.color = user.color || identity.color;
@@ -984,6 +1007,12 @@ loadPlate()
         desks.rename(identity.id, identity.name);
       }
       paintSelf();
+      const savedAd = await fetchOfficeAd();
+      if (savedAd.ok) {
+        officeAdState = savedAd.officeAd;
+        session.officeAd = officeAdState;
+        macCtl?.setOfficeAd({ enabled: officeAdState.enabled, previewUrl: officeAdState.url });
+      }
       room.identify();
       await worldChat?.reconnect(wallet.identity, wallet.address);
     };
@@ -1002,6 +1031,8 @@ loadPlate()
       await logoutAccount();
       clearAccountEmail();
       session = null;
+      officeAdState = { enabled: false, hasImage: false, rev: 0 };
+      macCtl?.setOfficeAd({ enabled: false, previewUrl: null });
       identity.email = undefined;
       saveIdentity(identity);
       guest = await ensureGuestWallet(identity.id);
@@ -1077,6 +1108,44 @@ loadPlate()
       onBlock: (id, on) => setBlock(id, on),
       onDebugKnock: () => startBotKnock(),
       onBoot: () => bootOffice(),
+      officeAd: {
+        get: () => ({ enabled: officeAdState.enabled, previewUrl: officeAdState.url }),
+        setEnabled: async (on) => {
+          if (!isSignedIn()) {
+            askAccount("Sign in to set a window ad.");
+            mac.setOfficeAd({ enabled: officeAdState.enabled, previewUrl: officeAdState.url });
+            return;
+          }
+          const saved = await saveOfficeAd({ enabled: on });
+          if (!saved.ok) {
+            mac.setOfficeAd({ enabled: officeAdState.enabled, previewUrl: officeAdState.url });
+            return;
+          }
+          officeAdState = saved.officeAd;
+          mac.setOfficeAd({ enabled: officeAdState.enabled, previewUrl: officeAdState.url });
+          room.sendOfficeAd(officeAdState.enabled);
+        },
+        setImage: async (file) => {
+          if (!isSignedIn()) {
+            askAccount("Sign in to set a window ad.");
+            return { ok: false, error: "Sign in first." };
+          }
+          try {
+            const packed = await compressOfficeAd(file);
+            const saved = await saveOfficeAd({
+              image: packed.dataUrl,
+              enabled: officeAdState.hasImage ? officeAdState.enabled : true,
+            });
+            if (!saved.ok) return { ok: false, error: saved.error || "Couldn't save." };
+            officeAdState = saved.officeAd;
+            mac.setOfficeAd({ enabled: officeAdState.enabled, previewUrl: officeAdState.url });
+            room.sendOfficeAd(officeAdState.enabled);
+            return { ok: true, previewUrl: officeAdState.url };
+          } catch (err) {
+            return { ok: false, error: err instanceof Error ? err.message : "Couldn't save." };
+          }
+        },
+      },
       auth: {
         email: identity.email,
         googleClientId: authConfig.googleClientId,

@@ -809,6 +809,63 @@ body.editing #mac-stack {
   width: auto;
 }
 
+#mac-office-ad {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dotted #888;
+}
+
+.mac-check {
+  display: flex !important;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 6px;
+}
+
+.mac-check input {
+  margin: 0;
+}
+
+.mac-ad-drop {
+  position: relative;
+  min-height: 92px;
+  margin-top: 6px;
+  padding: 8px;
+  background: #fff;
+  border: 1px dashed #000;
+  box-shadow: inset 1px 1px 0 #888;
+  text-align: center;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.mac-ad-drop.over {
+  background: #e8f0ff;
+}
+
+.mac-ad-drop.has-image {
+  border-style: solid;
+}
+
+#mac-ad-drop-label {
+  display: block;
+  font-size: 11px;
+  padding: 22px 8px;
+}
+
+#mac-ad-preview {
+  display: block;
+  max-width: 100%;
+  max-height: 120px;
+  margin: 0 auto 4px;
+  background: #111;
+}
+
+#mac-ad-hint.ok,
+#mac-ad-hint.err {
+  font-weight: 700;
+}
+
 #mac-chat-input:disabled {
   opacity: 0.5;
 }

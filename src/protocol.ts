@@ -41,6 +41,15 @@ export type ConferenceReservation = {
   createdAt: number;
 };
 
+/** Billboard on an occupied office's exterior windows. Omitted when vacant or toggled off. */
+export type OfficeAd = {
+  deskId: string;
+  peerId: string;
+  enabled: boolean;
+  /** Cache-busted public URL for the stored image. */
+  url?: string;
+};
+
 export type Claim = {
   deskId: string;
   kind: DeskKind;
@@ -49,6 +58,8 @@ export type Claim = {
   privacy: Privacy;
   /** Unix ms when they checked in. */
   since: number;
+  /** Present only for occupied offices with an enabled window ad. */
+  officeAd?: OfficeAd;
 };
 
 export type ClientMsg =
@@ -66,10 +77,11 @@ export type ClientMsg =
   | { type: "block"; id: string }
   | { type: "unblock"; id: string }
   | { type: "reserve"; roomId: string; day: string; startMin: number; durationMin: 30 | 60 }
-  | { type: "cancel-reserve"; id: string };
+  | { type: "cancel-reserve"; id: string }
+  | { type: "office-ad"; enabled: boolean };
 
 export type ServerMsg =
-  | { type: "welcome"; roomId: string; self: Peer; peers: Peer[]; claims: Claim[]; reservations?: ConferenceReservation[]; blocked?: string[]; blockedBy?: string[] }
+  | { type: "welcome"; roomId: string; self: Peer; peers: Peer[]; claims: Claim[]; reservations?: ConferenceReservation[]; blocked?: string[]; blockedBy?: string[]; officeAds?: OfficeAd[] }
   | { type: "join"; peer: Peer }
   | { type: "leave"; id: string }
   | { type: "move"; id: string; x: number; y: number; facing?: number }
@@ -86,6 +98,7 @@ export type ServerMsg =
   | { type: "reservations"; reservations: ConferenceReservation[] }
   | { type: "reserve"; reservation: ConferenceReservation }
   | { type: "cancel-reserve"; id: string }
+  | { type: "office-ad"; ad: OfficeAd | null; deskId: string; peerId: string }
   | { type: "error"; message: string; deskId?: string };
 
 export function clampPrivacy(value: unknown): Privacy {

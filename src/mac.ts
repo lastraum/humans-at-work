@@ -9,6 +9,17 @@ export type MacAuth = {
   onLogout: () => Promise<void>;
 };
 
+export type MacOfficeAd = {
+  enabled: boolean;
+  previewUrl?: string | null;
+};
+
+export type MacOfficeAdHandlers = {
+  get: () => MacOfficeAd;
+  setEnabled: (on: boolean) => void | Promise<void>;
+  setImage: (file: File) => Promise<{ ok: boolean; error?: string; previewUrl?: string | null }>;
+};
+
 export function attachMac(opts: {
   root: HTMLElement;
   getName: () => string;
@@ -23,6 +34,7 @@ export function attachMac(opts: {
   onDebugKnock?: () => void;
   onBoot?: () => void;
   auth?: MacAuth;
+  officeAd?: MacOfficeAdHandlers;
 }) {
   const root = opts.root;
   const closeBtn = root.querySelector(".mac-close")!;
@@ -186,6 +198,81 @@ export function attachMac(opts: {
     script.addEventListener("load", render, { once: true });
     document.head.appendChild(script);
   };
+
+  const adEnabled = root.querySelector<HTMLInputElement>("#mac-ad-enabled");
+  const adDrop = root.querySelector<HTMLElement>("#mac-ad-drop");
+  const adFile = root.querySelector<HTMLInputElement>("#mac-ad-file");
+  const adPreview = root.querySelector<HTMLImageElement>("#mac-ad-preview");
+  const adLabel = root.querySelector<HTMLElement>("#mac-ad-drop-label");
+  const adHint = root.querySelector<HTMLElement>("#mac-ad-hint");
+  const adHintRest = adHint?.textContent ?? "Images are resized to 512px on the long side.";
+  let adHintTimer = 0;
+  const flashAd = (text: string, ok: boolean) => {
+    if (!adHint) return;
+    adHint.textContent = text;
+    adHint.classList.toggle("ok", ok);
+    adHint.classList.toggle("err", !ok);
+    window.clearTimeout(adHintTimer);
+    adHintTimer = window.setTimeout(() => {
+      adHint.textContent = adHintRest;
+      adHint.classList.remove("ok", "err");
+    }, 2200);
+  };
+  const paintOfficeAd = (state?: MacOfficeAd) => {
+    const next = state ?? opts.officeAd?.get() ?? { enabled: false, previewUrl: null };
+    if (adEnabled) adEnabled.checked = Boolean(next.enabled);
+    const url = next.previewUrl ?? "";
+    if (adPreview) {
+      if (url) {
+        adPreview.src = url;
+        adPreview.hidden = false;
+      } else {
+        adPreview.removeAttribute("src");
+        adPreview.hidden = true;
+      }
+    }
+    adDrop?.classList.toggle("has-image", Boolean(url));
+    if (adLabel) adLabel.textContent = url ? "Replace image" : "Drop an image or click to choose";
+  };
+  adEnabled?.addEventListener("change", () => {
+    void opts.officeAd?.setEnabled(Boolean(adEnabled.checked));
+  });
+  const pickAdFile = () => adFile?.click();
+  adDrop?.addEventListener("click", pickAdFile);
+  adDrop?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      pickAdFile();
+    }
+  });
+  adDrop?.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    adDrop.classList.add("over");
+  });
+  adDrop?.addEventListener("dragleave", () => adDrop.classList.remove("over"));
+  adDrop?.addEventListener("drop", (event) => {
+    event.preventDefault();
+    adDrop.classList.remove("over");
+    const file = event.dataTransfer?.files?.[0];
+    if (file) void takeAdFile(file);
+  });
+  adFile?.addEventListener("change", () => {
+    const file = adFile.files?.[0];
+    adFile.value = "";
+    if (file) void takeAdFile(file);
+  });
+  const takeAdFile = async (file: File) => {
+    if (!opts.officeAd) return;
+    flashAd("Saving…", true);
+    const result = await opts.officeAd.setImage(file);
+    if (!result.ok) {
+      flashAd(result.error || "Couldn't save.", false);
+      return;
+    }
+    paintOfficeAd({ enabled: adEnabled?.checked ?? true, previewUrl: result.previewUrl });
+    flashAd("Saved.", true);
+  };
+  paintOfficeAd();
 
   paintAccount(opts.auth?.email);
   if (opts.auth?.googleClientId) {
@@ -384,6 +471,9 @@ export function attachMac(opts: {
     setAccount(email?: string) {
       paintAccount(email);
       paintChat();
+    },
+    setOfficeAd(state: MacOfficeAd) {
+      paintOfficeAd(state);
     },
     askSignIn,
     showKnock(fromName: string, fromId: string) {

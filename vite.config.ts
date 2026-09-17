@@ -79,7 +79,7 @@ export default defineConfig({
   server: {
     port: 5885,
     host: true,
-    watch: { ignored: ["**/data/floor-plate.json", "**/data/accounts.json"] },
+    watch: { ignored: ["**/data/floor-plate.json", "**/data/accounts.json", "**/data/office-ads/**"] },
     fs: { deny: [".env", ".env.*", "*.{crt,pem}", "**/.git/**", "**/data/accounts.json"] },
   },
   publicDir: "public",
