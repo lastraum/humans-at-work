@@ -10,6 +10,7 @@ export const KIND_CHAR: Record<CellKind, string> = {
   kitchen: "K",
   conference: "C",
   recreation: "R",
+  library: "L",
   sidewalk: "w",
   parking: "p",
 };
@@ -23,6 +24,7 @@ export const CHAR_KIND: Record<string, CellKind> = {
   K: "kitchen",
   C: "conference",
   R: "recreation",
+  L: "library",
   w: "sidewalk",
   p: "parking",
 };
@@ -32,6 +34,7 @@ export const INDOOR_WALKABLE: CellKind[] = [
   "elevator",
   "kitchen",
   "recreation",
+  "library",
   "office",
   "cube",
   "conference",
@@ -49,6 +52,7 @@ export const INDOOR_KINDS: CellKind[] = [
   "kitchen",
   "conference",
   "recreation",
+  "library",
 ];
 
 export const PAINT_KINDS: { kind: CellKind; label: string }[] = [
@@ -58,6 +62,7 @@ export const PAINT_KINDS: { kind: CellKind; label: string }[] = [
   { kind: "conference", label: "conference" },
   { kind: "kitchen", label: "kitchen" },
   { kind: "recreation", label: "recreation" },
+  { kind: "library", label: "library" },
   { kind: "elevator", label: "elevator" },
   { kind: "sidewalk", label: "sidewalk" },
   { kind: "parking", label: "parking" },
@@ -269,6 +274,7 @@ export function syncGridDerived(plate: FloorPlate) {
   plate.cubicles = collect(plate, "cube", plate.cubicles, "cube", false);
   plate.conferences = collectMergedRooms(plate, "conference", "conf", plate.conferences);
   plate.recreations = collectMergedRooms(plate, "recreation", "rec", plate.recreations);
+  plate.libraries = collectMergedRooms(plate, "library", "lib", plate.libraries);
   const kitchen = cellsOf(plate, "kitchen");
   const elevator = cellsOf(plate, "elevator");
   plate.zones.kitchen = { ...plate.zones.kitchen, cells: kitchen };
@@ -310,7 +316,7 @@ function shiftRooms(
   dCol: number,
   dRow: number,
 ) {
-  for (const list of [plate.offices, plate.cubicles, plate.conferences, plate.recreations]) {
+  for (const list of [plate.offices, plate.cubicles, plate.conferences, plate.recreations, plate.libraries]) {
     if (!list) continue;
     for (const item of list) {
       if (dCol && item.col >= colFrom) item.col += dCol;
@@ -477,6 +483,15 @@ export function defaultRecreationTemplate(size: number): OfficeTemplate {
   };
 }
 
+/** Walled quiet room. Interior stays empty so the editor can furnish it. */
+export function defaultLibraryTemplate(size: number): OfficeTemplate {
+  return {
+    size,
+    structure: conferencePerimeter(1, 1, size),
+    furniture: [],
+  };
+}
+
 function ensureAssetTypes(plate: FloorPlate) {
   plate.assets.types = { ...FURNITURE_CATALOG, ...plate.assets.types };
 }
@@ -547,8 +562,10 @@ export function ensureGridDefaults(plate: FloorPlate) {
   ensureOutsideStrip(plate);
   plate.conferenceTemplate = defaultConferenceTemplate(plate.grid.cellSize);
   plate.recreationTemplate ??= defaultRecreationTemplate(plate.grid.cellSize);
+  plate.libraryTemplate ??= defaultLibraryTemplate(plate.grid.cellSize);
   plate.conferences ??= [];
   plate.recreations ??= [];
+  plate.libraries ??= [];
   plate.cubicles ??= [];
   plate.offices ??= [];
   const spawn = sidewalkSpawn(plate);

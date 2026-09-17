@@ -51,6 +51,7 @@ export function attachMac(opts: {
   let chatChannel: ChatChannel = "office";
   let chatOffice: string | null = null;
   let claimed = false;
+  let quiet = false;
   const officeLogs = new Map<string, HTMLElement[]>();
   const privacyHint = root.querySelector("#mac-privacy-hint")!;
   const privacyBtns = root.querySelectorAll<HTMLInputElement>("input[name='mac-privacy']");
@@ -392,20 +393,27 @@ export function attachMac(opts: {
     if (!claimed && chatChannel === "floor") chatChannel = "office";
     const inOffice = Boolean(chatOffice);
     const floorLocked = !claimed;
-    chatLogFloor.hidden = chatChannel !== "floor" || floorLocked;
-    chatLogOffice.hidden = chatChannel !== "office" || !inOffice;
+    chatLogFloor.hidden = chatChannel !== "floor" || floorLocked || quiet;
+    chatLogOffice.hidden = chatChannel !== "office" || !inOffice || quiet;
     if (floorHint) {
-      floorHint.hidden = !(chatChannel === "floor" && floorLocked);
-      floorHint.textContent = "Claim an office to talk on the floor.";
+      floorHint.hidden = !quiet && !(chatChannel === "floor" && floorLocked);
+      floorHint.textContent = quiet
+        ? "Quiet — the library is silent."
+        : "Claim an office to talk on the floor.";
     }
-    if (chatHint) chatHint.hidden = chatChannel !== "office" || inOffice;
+    if (chatHint) chatHint.hidden = quiet || chatChannel !== "office" || inOffice;
     chatInput.disabled =
-      (chatChannel === "office" && !inOffice) || (chatChannel === "floor" && floorLocked);
-    chatInput.placeholder =
-      chatChannel === "office" ? "Message this office…" : "Message the floor…";
+      quiet ||
+      (chatChannel === "office" && !inOffice) ||
+      (chatChannel === "floor" && floorLocked);
+    chatInput.placeholder = quiet
+      ? "Quiet — library"
+      : chatChannel === "office"
+        ? "Message this office…"
+        : "Message the floor…";
     chatTabs.forEach((tab) => {
       tab.classList.toggle("on", tab.dataset.chat === chatChannel);
-      tab.disabled = tab.dataset.chat === "floor" && floorLocked;
+      tab.disabled = quiet || (tab.dataset.chat === "floor" && floorLocked);
     });
     if (chatChannel === "office" && inOffice) {
       chatLogOffice.replaceChildren(...(officeLogs.get(chatOffice!) ?? []));
@@ -437,6 +445,7 @@ export function attachMac(opts: {
     }
     const text = chatInput.value.trim();
     if (!text) return;
+    if (quiet) return;
     if (chatChannel === "office" && !chatOffice) return;
     if (chatChannel === "floor" && !claimed) return;
     opts.onChat(text, chatChannel);
@@ -526,6 +535,11 @@ export function attachMac(opts: {
       chatOffice = deskId;
       paintChat();
     },
+    setQuiet(on: boolean) {
+      if (quiet === on) return;
+      quiet = on;
+      paintChat();
+    },
     setFloor(
       rows: {
         peerId: string;
@@ -573,6 +587,7 @@ export function attachMac(opts: {
     },
     addChat(name: string, text: string, self = false, channel: ChatChannel = "floor", deskId?: string) {
       if (!opts.signedIn?.()) return;
+      if (quiet) return;
       if (channel === "floor" && !claimed) return;
       const row = rowEl(name, text, self);
       if (channel === "office") {

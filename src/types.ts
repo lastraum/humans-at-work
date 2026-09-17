@@ -42,6 +42,7 @@ export type CellKind =
   | "kitchen"
   | "conference"
   | "recreation"
+  | "library"
   | "sidewalk"
   | "parking";
 
@@ -106,5 +107,7 @@ export type FloorPlate = {
   conferences?: OfficeInstance[];
   recreationTemplate?: OfficeTemplate;
   recreations?: OfficeInstance[];
+  libraryTemplate?: OfficeTemplate;
+  libraries?: OfficeInstance[];
   avatars?: Avatar[];
 };

@@ -25,10 +25,31 @@ export function connectWorldChat(opts: {
   const room = new Room();
   let connected = false;
   let reconnecting = false;
+  let quiet = false;
+  let micBeforeQuiet = false;
   let auth = opts.auth;
   const worldName = opts.worldName ?? DCL_WORLD;
 
+  const applyVoiceQuiet = () => {
+    if (room.state !== "connected") return;
+    if (quiet) {
+      micBeforeQuiet = room.localParticipant.isMicrophoneEnabled;
+      void room.localParticipant.setMicrophoneEnabled(false);
+    } else if (micBeforeQuiet) {
+      void room.localParticipant.setMicrophoneEnabled(true);
+      micBeforeQuiet = false;
+    }
+    for (const participant of room.remoteParticipants.values()) {
+      participant.setVolume(quiet ? 0 : 1);
+    }
+  };
+
+  room.on(RoomEvent.TrackSubscribed, (_track, pub, participant) => {
+    if (pub.kind === "audio" && quiet) participant.setVolume(0);
+  });
+
   room.on(RoomEvent.DataReceived, (payload, participant, _kind, topic) => {
+    if (quiet) return;
     if (participant?.isLocal) return;
     const fromId = participant?.identity?.trim().toLowerCase() || "";
     const name = participant?.name?.trim() || fromId.slice(0, 10);
@@ -71,7 +92,12 @@ export function connectWorldChat(opts: {
 
   return {
     ready: () => connected && room.state === "connected",
+    setQuiet(on: boolean) {
+      quiet = on;
+      applyVoiceQuiet();
+    },
     sendChat(text: string, channel: ChatChannel, destinations: string[], deskId?: string) {
+      if (quiet) return true;
       if (!this.ready()) return false;
       if (channel === "office") {
         if (!deskId || destinations.length === 0) return true;

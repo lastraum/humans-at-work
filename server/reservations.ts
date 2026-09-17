@@ -185,7 +185,12 @@ export function knownConferenceIds(): Set<string> {
     const plate = JSON.parse(
       readFileSync(resolve(rootDir, "data/floor-plate.json"), "utf8"),
     ) as { conferences?: { id?: string }[] };
-    return new Set((plate.conferences ?? []).map((row) => String(row.id ?? "")).filter(Boolean));
+    return new Set(
+      (plate.conferences ?? [])
+        .filter((row) => String(row.id ?? "") && !String(row.id).startsWith("lib_"))
+        .map((row) => String(row.id ?? ""))
+        .filter(Boolean),
+    );
   } catch {
     return new Set();
   }

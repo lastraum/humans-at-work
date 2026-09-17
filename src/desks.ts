@@ -339,9 +339,10 @@ export function attachDesks(opts: {
   officesRoot: THREE.Group;
   cubiclesRoot: THREE.Group;
   recreationsRoot?: THREE.Group;
+  librariesRoot?: THREE.Group;
   looseRoot?: THREE.Group;
 }) {
-  const { plate, officesRoot, cubiclesRoot, recreationsRoot, looseRoot } = opts;
+  const { plate, officesRoot, cubiclesRoot, recreationsRoot, librariesRoot, looseRoot } = opts;
   const desks = new Map<string, Desk>();
   const claims = new Map<string, Claim>();
   const fixtures = new Map<string, string>();
@@ -449,6 +450,7 @@ export function attachDesks(opts: {
       seatRay.setFromCamera(pointer, camera);
       const targets: THREE.Object3D[] = [...desks.values()].map((desk) => desk.group);
       if (recreationsRoot) targets.push(...recreationsRoot.children);
+      if (librariesRoot) targets.push(...librariesRoot.children);
       if (looseRoot) targets.push(...looseRoot.children);
       const hits = seatRay.intersectObjects(targets, true);
       const hit = hits[0];
@@ -464,6 +466,7 @@ export function attachDesks(opts: {
           (parent.userData?.office as OfficeInstance | undefined) ??
           (parent.userData?.cubicle as OfficeInstance | undefined);
         const rec = parent.userData?.recreation as OfficeInstance | undefined;
+        const lib = parent.userData?.library as OfficeInstance | undefined;
         if (inst) {
           desk = desks.get(inst.id) ?? null;
           roomRot = inst.rot ?? 0;
@@ -471,6 +474,10 @@ export function attachDesks(opts: {
         }
         if (rec) {
           roomRot = rec.rot ?? 0;
+          break;
+        }
+        if (lib) {
+          roomRot = lib.rot ?? 0;
           break;
         }
         parent = parent.parent;
