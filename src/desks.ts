@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { fromWorld } from "./coords";
 import { setHingedDoorOpen } from "./createPlate";
+import { applyOfficeAd } from "./officeAds";
 import { clampPrivacy, type Claim, type DeskKind, type Privacy } from "./protocol";
 import type { FloorPlate, OfficeInstance } from "./types";
 
@@ -379,6 +380,11 @@ export function attachDesks(opts: {
     const look = !occupied ? VACANT : privacy === "focus" ? FOCUS : OCCUPIED;
     const name = occupied ? (claim?.name ?? fixture ?? "") : "";
     for (const glass of windowGlasses(desk.group)) tintGlass(glass, look);
+    const adUrl =
+      claim?.kind === "office" && claim.officeAd?.enabled && claim.officeAd.url
+        ? claim.officeAd.url
+        : null;
+    applyOfficeAd(desk.group, adUrl);
     const lamp = lampNode(desk.group);
     if (lamp) {
       const light = ensureLampLight(lamp);

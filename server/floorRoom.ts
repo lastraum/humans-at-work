@@ -13,12 +13,13 @@ import {
   type Claim,
   type ClientMsg,
   type DeskKind,
+  type OfficeAd,
   type Peer,
   type Pose,
   type ServerMsg,
   clampPrivacy,
 } from "../src/protocol";
-import { setUserBlock, userBlocks, userIdForToken, whoBlocked } from "./auth";
+import { officeAdForPeer, setUserBlock, userBlocks, userIdForToken, whoBlocked } from "./auth";
 import {
   knownConferenceIds,
   listReservations,
@@ -110,6 +111,28 @@ function claimsOf(roomId: string) {
 
 function kindOfDesk(id: string): DeskKind {
   return id.startsWith("cube") || id.startsWith("cubicle") ? "cubicle" : "office";
+}
+
+function adForClaim(peerId: string, deskId: string, kind: DeskKind): OfficeAd | undefined {
+  if (kind !== "office") return undefined;
+  const ad = officeAdForPeer(peerId);
+  if (!ad) return undefined;
+  return { deskId, peerId, enabled: true, url: ad.url };
+}
+
+function syncClaimAd(claim: Claim) {
+  const ad = adForClaim(claim.peerId, claim.deskId, claim.kind);
+  if (ad) claim.officeAd = ad;
+  else delete claim.officeAd;
+  return claim;
+}
+
+function adsOf(claims: Iterable<Claim>): OfficeAd[] {
+  const list: OfficeAd[] = [];
+  for (const claim of claims) {
+    if (claim.officeAd?.enabled && claim.officeAd.url) list.push(claim.officeAd);
+  }
+  return list;
 }
 
 function releasePeer(roomId: string, room: Map<string, Slot>, peerId: string) {
@@ -218,6 +241,7 @@ function attachRoom(httpServer: Server) {
               if (claim.peerId !== selfId) continue;
               claim.peerId = id;
               claim.name = name;
+              syncClaimAd(claim);
               broadcast(room!, null, { type: "claim", claim });
             }
             broadcast(room!, null, { type: "leave", id: selfId });
@@ -242,15 +266,20 @@ function attachRoom(httpServer: Server) {
         for (const other of room!.values()) {
           if (other.blocked.has(id)) blockedBy.add(other.peer.id);
         }
+        for (const claim of claims.values()) {
+          if (claim.peerId === id) syncClaimAd(claim);
+        }
+        const claimList = [...claims.values()];
         send(ws, {
           type: "welcome",
           roomId,
           self: peer,
           peers: others,
-          claims: [...claims.values()],
+          claims: claimList,
           reservations: listReservations(),
           blocked: [...blocked],
           blockedBy: [...blockedBy],
+          officeAds: adsOf(claimList),
         });
         if (existing && existing.ws === ws) broadcast(room!, id, { type: "state", id, ...peer });
         else broadcast(room!, id, { type: "join", peer });
@@ -340,12 +369,34 @@ function attachRoom(httpServer: Server) {
           privacy: "open",
           since: Date.now(),
         };
+        syncClaimAd(claim);
         claims.set(deskId, claim);
         broadcast(room!, null, { type: "claim", claim });
+        if (claim.officeAd) {
+          broadcast(room!, null, { type: "office-ad", ad: claim.officeAd, deskId, peerId: selfId });
+        }
         return;
       }
       if (msg.type === "release") {
         releasePeer(roomId, room!, selfId);
+        return;
+      }
+      if (msg.type === "office-ad") {
+        if (needAccount()) return;
+        const claims = claimsOf(roomId);
+        const mine = [...claims.values()].find((claim) => claim.peerId === selfId);
+        if (!mine || mine.kind !== "office") {
+          send(ws, { type: "office-ad", ad: null, deskId: mine?.deskId ?? "", peerId: selfId });
+          return;
+        }
+        syncClaimAd(mine);
+        broadcast(room!, null, { type: "claim", claim: mine });
+        broadcast(room!, null, {
+          type: "office-ad",
+          ad: mine.officeAd ?? null,
+          deskId: mine.deskId,
+          peerId: selfId,
+        });
         return;
       }
       if (msg.type === "privacy") {

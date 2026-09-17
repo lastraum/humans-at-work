@@ -99,7 +99,7 @@ export function nextBookingLabel(
   const upcoming = roomBookings(reservations, roomId, day).find(
     (row) => row.startMin + row.durationMin > nowMin,
   );
-  if (!upcoming) return "Open";
+  if (!upcoming) return "";
   if (upcoming.startMin <= nowMin) {
     return `In use · until ${clockLabel(upcoming.startMin + upcoming.durationMin)}`;
   }

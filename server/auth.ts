@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,9 @@ import { loadEnv, type Plugin } from "vite";
 import { MAX_ID, MAX_NAME } from "../src/protocol";
 
 const AUTH_PREFIX = "/__auth";
+const OFFICE_ADS_PREFIX = "/__office-ads";
+const OFFICE_AD_MAX_BYTES = 200_000;
+const OFFICE_AD_MIMES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
 const CODE_TTL_MS = 10 * 60 * 1000;
 const CODE_GAP_MS = 20 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -20,6 +23,9 @@ type User = {
   color: string;
   googleSub?: string;
   blocked?: string[];
+  officeAdEnabled?: boolean;
+  officeAdRev?: number;
+  officeAdMime?: string;
   createdAt: number;
   lastLoginAt: number;
 };
@@ -55,6 +61,7 @@ type JsonRes = {
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const storePath = resolve(rootDir, "data/accounts.json");
+const adsDir = resolve(rootDir, "data/office-ads");
 
 let queue: Promise<unknown> = Promise.resolve();
 
@@ -180,6 +187,108 @@ function safeEqual(a: string, b: string) {
 
 function publicUser(user: User) {
   return { id: user.id, email: user.email, name: user.name, color: user.color };
+}
+
+function safeUserId(value: unknown) {
+  const id = String(value ?? "").slice(0, MAX_ID);
+  return /^[A-Za-z0-9._:-]+$/.test(id) ? id : "";
+}
+
+function extForMime(mime: string) {
+  if (mime === "image/webp") return "webp";
+  if (mime === "image/png") return "png";
+  return "jpg";
+}
+
+function adFilePath(userId: string, mime?: string) {
+  return resolve(adsDir, `${userId}.${extForMime(mime ?? "image/jpeg")}`);
+}
+
+function findAdFile(userId: string, mime?: string) {
+  const preferred = adFilePath(userId, mime);
+  if (existsSync(preferred)) return preferred;
+  for (const ext of ["jpg", "jpeg", "webp", "png"]) {
+    const path = resolve(adsDir, `${userId}.${ext}`);
+    if (existsSync(path)) return path;
+  }
+  return "";
+}
+
+function officeAdUrl(userId: string, rev: number) {
+  return `${OFFICE_ADS_PREFIX}/${encodeURIComponent(userId)}?v=${rev}`;
+}
+
+export type OfficeAdMeta = {
+  enabled: boolean;
+  hasImage: boolean;
+  rev: number;
+  url?: string;
+};
+
+export function officeAdMeta(userId: string): OfficeAdMeta | null {
+  const id = safeUserId(userId);
+  if (!id) return null;
+  const user = loadStore().users.find((row) => row.id === id);
+  const file = findAdFile(id, user?.officeAdMime);
+  const hasImage = Boolean(file);
+  const enabled = Boolean(user?.officeAdEnabled) && hasImage;
+  const rev = user?.officeAdRev || (hasImage ? 1 : 0);
+  return {
+    enabled,
+    hasImage,
+    rev,
+    url: hasImage ? officeAdUrl(id, rev) : undefined,
+  };
+}
+
+/** Room-visible ad: only when the account has an image and the toggle is on. */
+export function officeAdForPeer(peerId: string): { enabled: true; url: string } | null {
+  const meta = officeAdMeta(peerId);
+  if (!meta?.enabled || !meta.url) return null;
+  return { enabled: true, url: meta.url };
+}
+
+function decodeDataUrl(value: unknown): { mime: string; bytes: Buffer } | null {
+  const raw = String(value ?? "").trim();
+  const match = /^data:(image\/(?:jpeg|jpg|png|webp));base64,([A-Za-z0-9+/=\s]+)$/i.exec(raw);
+  if (!match) return null;
+  const mime = match[1].toLowerCase() === "image/jpg" ? "image/jpeg" : match[1].toLowerCase();
+  if (!OFFICE_AD_MIMES.has(mime)) return null;
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(match[2].replace(/\s+/g, ""), "base64");
+  } catch {
+    return null;
+  }
+  if (!bytes.length || bytes.length > OFFICE_AD_MAX_BYTES) return null;
+  const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8;
+  const png = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+  const webp = bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46;
+  if (mime === "image/jpeg" && !jpeg) return null;
+  if (mime === "image/png" && !png) return null;
+  if (mime === "image/webp" && !webp) return null;
+  return { mime, bytes };
+}
+
+function writeAdImage(userId: string, mime: string, bytes: Buffer) {
+  mkdirSync(adsDir, { recursive: true });
+  for (const ext of ["jpg", "jpeg", "webp", "png"]) {
+    const path = resolve(adsDir, `${userId}.${ext}`);
+    if (existsSync(path)) unlinkSync(path);
+  }
+  writeFileSync(adFilePath(userId, mime), bytes);
+}
+
+function publicOfficeAd(user: User) {
+  const file = findAdFile(user.id, user.officeAdMime);
+  const hasImage = Boolean(file);
+  const rev = user.officeAdRev || (hasImage ? 1 : 0);
+  return {
+    enabled: Boolean(user.officeAdEnabled),
+    hasImage,
+    rev,
+    url: hasImage ? officeAdUrl(user.id, rev) : undefined,
+  };
 }
 
 function mintSession(store: Store, user: User): Session {
@@ -328,11 +437,18 @@ export function authPlugin(): Plugin {
     name: "haw-auth",
     configureServer(server) {
       if (!existsSync(dirname(storePath))) mkdirSync(dirname(storePath), { recursive: true });
+      if (!existsSync(adsDir)) mkdirSync(adsDir, { recursive: true });
       server.middlewares.use((req, res, next) => {
         const url = new URL(req.url ?? "/", "http://localhost");
         if (url.pathname === "/data/accounts.json" || url.pathname === "/accounts.json") {
           res.statusCode = 404;
           res.end();
+          return;
+        }
+        if (url.pathname.startsWith(OFFICE_ADS_PREFIX)) {
+          void serveOfficeAdFile(req, res, url.pathname).catch((err) => {
+            json(res, 500, { ok: false, error: String(err) });
+          });
           return;
         }
         if (!url.pathname.startsWith(AUTH_PREFIX)) {
@@ -371,6 +487,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
       user: publicUser(found.user),
       address: found.session.address ?? null,
       blocked: found.user.blocked ?? [],
+      officeAd: publicOfficeAd(found.user),
     });
     return;
   }
@@ -565,5 +682,77 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
     return;
   }
 
+  if (pathname === `${AUTH_PREFIX}/office-ad` && method === "GET") {
+    const found = await withStore((store) => sessionOf(store, bearer(req)));
+    if (!found) {
+      json(res, 401, { ok: false, error: "signed out" });
+      return;
+    }
+    json(res, 200, { ok: true, officeAd: publicOfficeAd(found.user) });
+    return;
+  }
+
+  if (pathname === `${AUTH_PREFIX}/office-ad` && method === "POST") {
+    const body = await readJson(req);
+    const image = body.image === undefined ? undefined : decodeDataUrl(body.image);
+    if (body.image !== undefined && !image) {
+      json(res, 400, { ok: false, error: "bad image" });
+      return;
+    }
+    const enabledIn = body.enabled;
+    if (enabledIn !== undefined && typeof enabledIn !== "boolean") {
+      json(res, 400, { ok: false, error: "bad enabled" });
+      return;
+    }
+    const found = await withStore((store) => {
+      const hit = sessionOf(store, bearer(req));
+      if (!hit) return null;
+      if (image) {
+        writeAdImage(hit.user.id, image.mime, image.bytes);
+        hit.user.officeAdMime = image.mime;
+        hit.user.officeAdRev = (hit.user.officeAdRev ?? 0) + 1;
+        if (enabledIn === undefined) hit.user.officeAdEnabled = true;
+      }
+      if (typeof enabledIn === "boolean") hit.user.officeAdEnabled = enabledIn;
+      return publicOfficeAd(hit.user);
+    });
+    if (!found) {
+      json(res, 401, { ok: false, error: "signed out" });
+      return;
+    }
+    json(res, 200, { ok: true, officeAd: found });
+    return;
+  }
+
   json(res, 404, { ok: false, error: "not found" });
+}
+
+function mimeFromPath(path: string) {
+  if (path.endsWith(".webp")) return "image/webp";
+  if (path.endsWith(".png")) return "image/png";
+  return "image/jpeg";
+}
+
+async function serveOfficeAdFile(req: IncomingMessage, res: ServerResponse, pathname: string) {
+  if ((req.method ?? "GET") !== "GET") {
+    json(res, 405, { ok: false, error: "method" });
+    return;
+  }
+  const id = safeUserId(decodeURIComponent(pathname.slice(OFFICE_ADS_PREFIX.length).replace(/^\//, "").split("/")[0] ?? ""));
+  if (!id) {
+    json(res, 404, { ok: false, error: "not found" });
+    return;
+  }
+  const user = loadStore().users.find((row) => row.id === id);
+  const file = findAdFile(id, user?.officeAdMime);
+  if (!file) {
+    json(res, 404, { ok: false, error: "not found" });
+    return;
+  }
+  const body = readFileSync(file);
+  res.statusCode = 200;
+  res.setHeader("Content-Type", user?.officeAdMime || mimeFromPath(file));
+  res.setHeader("Cache-Control", "public, max-age=86400");
+  res.setHeader("Content-Length", String(body.length));
+  res.end(body);
 }
