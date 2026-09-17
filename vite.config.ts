@@ -79,6 +79,7 @@ export default defineConfig({
   server: {
     port: 5885,
     host: true,
+    allowedHosts: ["humans.lastslice.co", ".lastslice.co"],
     watch: { ignored: ["**/data/floor-plate.json", "**/data/accounts.json", "**/data/office-ads/**"] },
     fs: { deny: [".env", ".env.*", "*.{crt,pem}", "**/.git/**", "**/data/accounts.json"] },
   },
