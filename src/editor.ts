@@ -47,7 +47,7 @@ type Editable = THREE.Object3D & {
     editable: boolean;
     templateId?: string;
     officeId?: string;
-    cellKind?: "office" | "cubicle" | "conference" | "recreation";
+    cellKind?: "office" | "cubicle" | "conference" | "recreation" | "library";
     isDoor?: boolean;
   };
 };
@@ -63,7 +63,8 @@ function cellGroupOf(node: THREE.Object3D | null): THREE.Object3D | null {
       node.userData?.office ||
       node.userData?.cubicle ||
       node.userData?.conference ||
-      node.userData?.recreation
+      node.userData?.recreation ||
+      node.userData?.library
     ) {
       return node;
     }
@@ -111,6 +112,7 @@ export function attachEditor(opts: {
   cubiclesRoot: THREE.Group;
   conferencesRoot: THREE.Group;
   recreationsRoot: THREE.Group;
+  librariesRoot: THREE.Group;
   looseRoot: THREE.Group;
   avatarsRoot: THREE.Group;
   ground: THREE.Group;
@@ -131,6 +133,7 @@ export function attachEditor(opts: {
     cubiclesRoot,
     conferencesRoot,
     recreationsRoot,
+    librariesRoot,
     looseRoot,
     avatarsRoot,
     ground,
@@ -172,10 +175,12 @@ export function attachEditor(opts: {
     cubicles: OfficeInstance[];
     conferences: OfficeInstance[];
     recreations: OfficeInstance[];
+    libraries: OfficeInstance[];
     officeTemplate?: OfficeTemplate;
     cubicleTemplate?: OfficeTemplate;
     conferenceTemplate?: OfficeTemplate;
     recreationTemplate?: OfficeTemplate;
+    libraryTemplate?: OfficeTemplate;
   };
   const undoStack: PlateSnap[] = [];
   const redoStack: PlateSnap[] = [];
@@ -190,10 +195,12 @@ export function attachEditor(opts: {
       cubicles: plate.cubicles ?? [],
       conferences: plate.conferences ?? [],
       recreations: plate.recreations ?? [],
+      libraries: plate.libraries ?? [],
       officeTemplate: plate.officeTemplate,
       cubicleTemplate: plate.cubicleTemplate,
       conferenceTemplate: plate.conferenceTemplate,
       recreationTemplate: plate.recreationTemplate,
+      libraryTemplate: plate.libraryTemplate,
     });
 
   const applyPlateSnap = (snap: PlateSnap) => {
@@ -204,10 +211,12 @@ export function attachEditor(opts: {
     plate.cubicles = structuredClone(snap.cubicles);
     plate.conferences = structuredClone(snap.conferences);
     plate.recreations = structuredClone(snap.recreations);
+    plate.libraries = structuredClone(snap.libraries);
     plate.officeTemplate = structuredClone(snap.officeTemplate);
     plate.cubicleTemplate = structuredClone(snap.cubicleTemplate);
     plate.conferenceTemplate = structuredClone(snap.conferenceTemplate);
     plate.recreationTemplate = structuredClone(snap.recreationTemplate);
+    plate.libraryTemplate = structuredClone(snap.libraryTemplate);
   };
 
   const pushUndo = () => {
@@ -249,6 +258,13 @@ export function attachEditor(opts: {
         plate.recreations ?? [],
         plate.recreationTemplate,
         "recreation",
+      ),
+      restampTemplatedCells(
+        librariesRoot,
+        plate,
+        plate.libraries ?? [],
+        plate.libraryTemplate,
+        "library",
       ),
     ]);
     while (looseRoot.children.length) looseRoot.remove(looseRoot.children[0]);
@@ -341,6 +357,7 @@ export function attachEditor(opts: {
       (group.userData.cubicle as OfficeInstance | undefined) ??
       (group.userData.conference as OfficeInstance | undefined) ??
       (group.userData.recreation as OfficeInstance | undefined) ??
+      (group.userData.library as OfficeInstance | undefined) ??
       null
     );
   };
@@ -370,6 +387,7 @@ export function attachEditor(opts: {
     if (kind === "office") return plate.offices ?? [];
     if (kind === "cubicle") return plate.cubicles ?? [];
     if (kind === "conference") return plate.conferences ?? [];
+    if (kind === "library") return plate.libraries ?? [];
     return plate.recreations ?? [];
   };
 
@@ -377,6 +395,7 @@ export function attachEditor(opts: {
     if (kind === "office") return officesRoot;
     if (kind === "cubicle") return cubiclesRoot;
     if (kind === "conference") return conferencesRoot;
+    if (kind === "library") return librariesRoot;
     return recreationsRoot;
   };
 
@@ -384,6 +403,7 @@ export function attachEditor(opts: {
     if (kind === "office") return plate.officeTemplate;
     if (kind === "cubicle") return plate.cubicleTemplate;
     if (kind === "conference") return plate.conferenceTemplate;
+    if (kind === "library") return plate.libraryTemplate;
     return plate.recreationTemplate;
   };
 
@@ -672,6 +692,13 @@ export function attachEditor(opts: {
       plate.recreationTemplate,
       "recreation",
     );
+    syncTemplatedCells(
+      librariesRoot,
+      plate,
+      plate.libraries ?? [],
+      plate.libraryTemplate,
+      "library",
+    );
     for (const child of looseRoot.children) {
       if (child.userData?.item) applyItemTransform(child, child.userData.item, plate);
     }
@@ -723,7 +750,7 @@ export function attachEditor(opts: {
   const roomAtCell = (col: number, row: number) => {
     const match = (
       list: OfficeInstance[] | undefined,
-      kind: "office" | "cubicle" | "conference" | "recreation",
+      kind: "office" | "cubicle" | "conference" | "recreation" | "library",
       root: THREE.Group,
     ) => {
       const instance = list?.find((item) => {
@@ -737,7 +764,8 @@ export function attachEditor(opts: {
       match(plate.offices, "office", officesRoot) ??
       match(plate.cubicles, "cubicle", cubiclesRoot) ??
       match(plate.conferences, "conference", conferencesRoot) ??
-      match(plate.recreations, "recreation", recreationsRoot)
+      match(plate.recreations, "recreation", recreationsRoot) ??
+      match(plate.libraries, "library", librariesRoot)
     );
   };
 
@@ -797,6 +825,13 @@ export function attachEditor(opts: {
       plate.recreations ?? [],
       plate.recreationTemplate,
       "recreation",
+    );
+    syncTemplatedCells(
+      librariesRoot,
+      plate,
+      plate.libraries ?? [],
+      plate.libraryTemplate,
+      "library",
     );
   };
 
@@ -981,7 +1016,9 @@ export function attachEditor(opts: {
         ? "cubicle template"
         : kind === "conference"
           ? "conference template"
-          : "office template"
+          : kind === "library"
+            ? "library template"
+            : "office template"
       : "scene";
     const copyAllLabel = selected.userData.templateId
       ? "Copy all template JSON"
@@ -1333,7 +1370,8 @@ export function attachEditor(opts: {
       room?.userData?.office ??
       room?.userData?.cubicle ??
       room?.userData?.conference ??
-      room?.userData?.recreation;
+      room?.userData?.recreation ??
+      room?.userData?.library;
     if (inst && typeof inst.col === "number" && typeof inst.row === "number") {
       selectCell(inst.col, inst.row);
     }

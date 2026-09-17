@@ -6,6 +6,7 @@ import { createAvatar, createAvatars, setAvatarName, setNameTagVisible } from ".
 import {
   createConferences,
   createCubicles,
+  createLibraries,
   createOffices,
   createRecreations,
 } from "./createOffice";
@@ -53,6 +54,7 @@ import {
 import { compressOfficeAd } from "./officeAdImage";
 import type { ConferenceReservation, OfficeAd } from "./protocol";
 import { connectWorldChat } from "./worldChat";
+import { libraryAtCell, poseInQuietZone, setAmbientSilent } from "./quietZone";
 import type { Avatar, FloorPlate } from "./types";
 
 async function loadPlate(): Promise<FloorPlate> {
@@ -180,6 +182,7 @@ let elevX = 0;
 let elevZ = 0;
 let clockOut: ((home?: boolean) => void) | null = null;
 let macCtl: ReturnType<typeof attachMac> | null = null;
+let worldChatCtl: ReturnType<typeof connectWorldChat> | null = null;
 let remotesCtl: {
   update: (dt: number) => void;
   poses: () => { id: string; name: string; x: number; y: number; col?: number; row?: number }[];
@@ -200,6 +203,7 @@ let blocked = new Set<string>();
 let blockedBy = new Set<string>();
 let lastTick = performance.now();
 let lastFloorPaint = 0;
+let lastQuiet = false;
 let raf = 0;
 let bgTick = 0;
 
@@ -230,16 +234,18 @@ loadPlate()
       createCubicles(plate),
       createConferences(plate),
       createRecreations(plate),
+      createLibraries(plate),
       loadFurniture(plate),
     ]);
   })
-  .then(async ([plate, ground, structure, officesRoot, cubiclesRoot, conferencesRoot, recreationsRoot, loose]) => {
+  .then(async ([plate, ground, structure, officesRoot, cubiclesRoot, conferencesRoot, recreationsRoot, librariesRoot, loose]) => {
     const avatarsRoot = createAvatars(plate, officesRoot);
     const editRoot = new THREE.Group();
     editRoot.add(officesRoot);
     editRoot.add(cubiclesRoot);
     editRoot.add(conferencesRoot);
     editRoot.add(recreationsRoot);
+    editRoot.add(librariesRoot);
     editRoot.add(loose);
     editRoot.add(avatarsRoot);
     scene.add(editRoot);
@@ -251,6 +257,7 @@ loadPlate()
       officesRoot,
       cubiclesRoot,
       recreationsRoot,
+      librariesRoot,
       looseRoot: loose,
     });
     desksCtl = desks;
@@ -274,6 +281,7 @@ loadPlate()
       cubiclesRoot,
       conferencesRoot,
       recreationsRoot,
+      librariesRoot,
       looseRoot: loose,
       avatarsRoot,
       ground,
@@ -449,6 +457,21 @@ loadPlate()
         el.hidden = !label;
         el.dataset.busy = label.startsWith("In use") ? "1" : "0";
       }
+      for (const child of librariesRoot.children) {
+        const lib = child.userData?.library as { id?: string } | undefined;
+        if (!lib?.id) continue;
+        child.userData.confLabel = "Library";
+        let el = badgeById.get(lib.id);
+        if (!el) {
+          el = document.createElement("div");
+          el.className = "conf-badge lib-badge";
+          badgeLayer.appendChild(el);
+          badgeById.set(lib.id, el);
+        }
+        el.textContent = "Library";
+        el.hidden = false;
+        el.dataset.busy = "0";
+      }
     };
     projectConfBadges = () => {
       if (editor.enabled()) {
@@ -457,25 +480,32 @@ loadPlate()
       }
       badgeLayer.hidden = false;
       const rect = canvas.getBoundingClientRect();
-      for (const child of conferencesRoot.children) {
-        const conf = child.userData?.conference as { id?: string } | undefined;
-        if (!conf?.id) continue;
-        const el = badgeById.get(conf.id);
-        if (!el || el.hidden) continue;
+      const projectBadge = (child: THREE.Object3D, id: string) => {
+        const el = badgeById.get(id);
+        if (!el || el.hidden) return;
         scratchBox.setFromObject(child);
         scratchBox.getCenter(scratchVec);
         scratchVec.y = scratchBox.max.y + 0.15;
         scratchVec.project(camera);
         const behind = scratchVec.z > 1;
         el.style.display = behind ? "none" : "block";
-        if (behind) continue;
+        if (behind) return;
         const x = (scratchVec.x * 0.5 + 0.5) * rect.width + rect.left;
         const y = (-scratchVec.y * 0.5 + 0.5) * rect.height + rect.top;
         el.style.left = `${x}px`;
         el.style.top = `${y}px`;
+      };
+      for (const child of conferencesRoot.children) {
+        const conf = child.userData?.conference as { id?: string } | undefined;
+        if (conf?.id) projectBadge(child, conf.id);
+      }
+      for (const child of librariesRoot.children) {
+        const lib = child.userData?.library as { id?: string } | undefined;
+        if (lib?.id) projectBadge(child, lib.id);
       }
     };
     confHoverLabel = (col, row) => {
+      if (libraryAtCell(plate, col, row)) return "Library";
       const conf = conferenceAtCell(plate, col, row);
       if (!conf) return null;
       const label = nextBookingLabel(reservations, conf.id);
@@ -564,6 +594,8 @@ loadPlate()
       },
       onChat: (id, name, text, channel, deskId) => {
         if (isMuted(id)) return;
+        const you = playerCtl?.pose();
+        if (you && poseInQuietZone(plate, you)) return;
         mac.addChat(name, text, id === identity.id, channel, deskId);
       },
       onKnock: (_deskId, fromId, fromName) => {
@@ -616,6 +648,8 @@ loadPlate()
         if (text === "offline") status.textContent = "offline";
       },
     });
+
+    paintConfBadges();
 
     confReserve = attachConferenceReserve({
       getReservations: () => reservations,
@@ -1089,6 +1123,8 @@ loadPlate()
           askAccount("Sign in to chat.");
           return;
         }
+        const pose = playerCtl?.pose();
+        if (pose && poseInQuietZone(plate, pose)) return;
         if (channel === "floor" && !desks.mine(identity.id)) return;
         if (channel === "office") {
           const you = playerCtl?.pose();
@@ -1203,12 +1239,15 @@ loadPlate()
       worldName: DCL_WORLD,
       onChat: (id, name, text, channel, deskId) => {
         if (isMuted(id)) return;
+        const you = playerCtl?.pose();
+        if (you && poseInQuietZone(plate, you)) return;
         mac.addChat(name, text, id === identity.address || id === identity.id, channel, deskId);
       },
       onStatus: (text) => {
         status.textContent = text;
       },
     });
+    worldChatCtl = worldChat;
     onBotArrived = () => {
       if (desks.mine(identity.id)?.privacy === "focus") {
         sendBotHome();
@@ -1266,11 +1305,18 @@ function simulate(dt: number) {
     lastFloorPaint = t;
     paintFloorRoster();
   }
-  if (you && livePlate) {
+    if (you && livePlate) {
     const col = you.col ?? Math.floor(you.x / livePlate.grid.cellSize);
     const row = you.row ?? Math.floor(you.y / livePlate.grid.cellSize);
     const here = desksCtl.atCell(col, row);
     macCtl?.setChatRoom(here ? here.id : null);
+    const quiet = poseInQuietZone(livePlate, you);
+    if (quiet !== lastQuiet) {
+      lastQuiet = quiet;
+      macCtl?.setQuiet(quiet);
+      worldChatCtl?.setQuiet(quiet);
+      setAmbientSilent(quiet);
+    }
   }
   if (botWaiting && remotesCtl && !remotesCtl.moving(BOT_ID)) {
     botWaiting = false;
@@ -1505,8 +1551,8 @@ function tick(render: boolean) {
             ? "couch · sit"
             : "chair · sit";
     } else if (hit && !status.textContent?.startsWith("loading")) {
-      if (kind === "conference" && col !== undefined && row !== undefined) {
-        status.textContent = confHoverLabel?.(col, row) ?? "conference";
+      if ((kind === "conference" || kind === "library") && col !== undefined && row !== undefined) {
+        status.textContent = confHoverLabel?.(col, row) ?? (kind === "library" ? "Library" : "conference");
       } else {
         const who = desk ? desksCtl?.label(desk) : null;
         status.textContent = who ? `${kind} · ${who}` : kind ?? "";

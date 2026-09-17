@@ -65,6 +65,53 @@ function loadDeskFootprints(): { cell: number; desks: DeskFootprint[] } {
 
 const { cell: CELL, desks: DESKS } = loadDeskFootprints();
 
+function loadQuietCells(): Set<string> {
+  const cells = new Set<string>();
+  const key = (col: number, row: number) => `${col},${row}`;
+  try {
+    const raw = JSON.parse(
+      readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../data/floor-plate.json"), "utf8"),
+    ) as {
+      cells?: string[];
+      legend?: Record<string, string>;
+      libraries?: { col?: number; row?: number; cols?: number; rows?: number }[];
+    };
+    const lines = raw.cells ?? [];
+    for (let row = 0; row < lines.length; row++) {
+      const line = lines[row] ?? "";
+      for (let col = 0; col < line.length; col++) {
+        const ch = line[col];
+        if (ch === "L" || raw.legend?.[ch] === "library") cells.add(key(col, row));
+      }
+    }
+    for (const room of raw.libraries ?? []) {
+      const col0 = Number(room.col) || 0;
+      const row0 = Number(room.row) || 0;
+      const cols = Number(room.cols) || 1;
+      const rows = Number(room.rows) || 1;
+      for (let dc = 0; dc < cols; dc++) {
+        for (let dr = 0; dr < rows; dr++) cells.add(key(col0 + dc, row0 + dr));
+      }
+    }
+  } catch {
+    /* plate missing */
+  }
+  return cells;
+}
+
+const QUIET_CELLS = loadQuietCells();
+
+function peerCell(peer: Peer) {
+  const col = peer.col ?? Math.floor(peer.x / CELL);
+  const row = peer.row ?? Math.floor(peer.y / CELL);
+  return { col, row };
+}
+
+function inQuietZone(peer: Peer) {
+  const { col, row } = peerCell(peer);
+  return QUIET_CELLS.has(`${col},${row}`);
+}
+
 function deskAt(col: number, row: number) {
   for (const desk of DESKS) {
     if (col >= desk.col && col < desk.col + desk.cols && row >= desk.row && row < desk.row + desk.rows) {
@@ -411,6 +458,10 @@ function attachRoom(httpServer: Server) {
       }
       if (msg.type === "chat") {
         if (needAccount()) return;
+        if (inQuietZone(slot.peer)) {
+          send(ws, { type: "error", message: "quiet — library" });
+          return;
+        }
         const text = String(msg.text ?? "")
           .replace(/\s+/g, " ")
           .trim()
@@ -430,13 +481,18 @@ function attachRoom(httpServer: Server) {
           });
           return;
         }
-        broadcast(room!, null, {
+        const payload: ServerMsg = {
           type: "chat",
           id: selfId,
           name: slot.peer.name,
           text,
           channel: "floor",
-        });
+        };
+        const raw = JSON.stringify(payload);
+        for (const dest of room!.values()) {
+          if (inQuietZone(dest.peer)) continue;
+          if (dest.ws.readyState === WebSocket.OPEN) dest.ws.send(raw);
+        }
         return;
       }
       if (msg.type === "knock") {

@@ -30,6 +30,7 @@ export const TILE: Record<CellKind, number> = {
   kitchen: 0x7ea0c4,
   conference: 0x8a6a9a,
   recreation: 0xd4a05a,
+  library: 0x6b5a3e,
   sidewalk: 0xc8c2b4,
   parking: 0x3c3e46,
 };

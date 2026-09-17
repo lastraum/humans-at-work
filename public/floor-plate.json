@@ -26,10 +26,11 @@
     "C": "conference",
     "R": "recreation",
     "w": "sidewalk",
-    "p": "parking"
+    "p": "parking",
+    "L": "library"
   },
   "cells": [
-    "CCxxxxCC",
+    "CCxxxxLL",
     "x......x",
     "x.xx.x.x",
     "x.xx.x.x",
@@ -12772,108 +12773,6 @@
       ]
     },
     {
-      "id": "conf_6_0_2x1",
-      "col": 6,
-      "row": 0,
-      "cols": 2,
-      "rows": 1,
-      "rot": 0,
-      "furniture": [
-        {
-          "_uid": "conf_6_0_2x1_table_0",
-          "type": "conference_table",
-          "id": "table",
-          "x": 138.7,
-          "y": 108.7,
-          "w": 150,
-          "h": 64,
-          "facing": 0
-        },
-        {
-          "_uid": "conf_6_0_2x1_screen_1",
-          "type": "projection_screen",
-          "id": "screen",
-          "x": 280.3,
-          "y": 136.7,
-          "w": 110,
-          "h": 14,
-          "facing": 270
-        },
-        {
-          "_uid": "conf_6_0_2x1_chair_n2_2",
-          "type": "cushion_chair",
-          "id": "chair_n2",
-          "x": 223.8,
-          "y": 48.9,
-          "facing": 0
-        },
-        {
-          "_uid": "conf_6_0_2x1_chair_s2_3",
-          "type": "cushion_chair",
-          "id": "chair_s2",
-          "x": 223.4,
-          "y": 108.6,
-          "facing": 180
-        },
-        {
-          "_uid": "conf_6_0_2x1_door_4",
-          "type": "door",
-          "x": 57.4,
-          "y": 171,
-          "w": 40,
-          "h": 8,
-          "facing": 0,
-          "hinge": "left",
-          "open": 0.38,
-          "doorEdge": "s",
-          "pitch": 0,
-          "roll": 0
-        },
-        {
-          "_uid": "conf_6_0_2x1_cushion_chair_5",
-          "type": "cushion_chair",
-          "x": 190.2,
-          "y": 48.8,
-          "facing": 0
-        },
-        {
-          "_uid": "conf_6_0_2x1_cushion_chair_6",
-          "type": "cushion_chair",
-          "x": 154.8,
-          "y": 48.3,
-          "facing": 0
-        },
-        {
-          "_uid": "conf_6_0_2x1_cushion_chair_7",
-          "type": "cushion_chair",
-          "x": 188.4,
-          "y": 109.3,
-          "facing": 180
-        },
-        {
-          "_uid": "conf_6_0_2x1_cushion_chair_8",
-          "type": "cushion_chair",
-          "x": 149.9,
-          "y": 110.2,
-          "facing": 180
-        },
-        {
-          "_uid": "conf_6_0_2x1_cushion_chair_9",
-          "type": "cushion_chair",
-          "x": 129.6,
-          "y": 83.1,
-          "facing": 90
-        },
-        {
-          "_uid": "conf_6_0_2x1_cushion_chair_10",
-          "type": "cushion_chair",
-          "x": 249.4,
-          "y": 77.6,
-          "facing": 270
-        }
-      ]
-    },
-    {
       "id": "conf_2_4_2x1",
       "col": 2,
       "row": 4,
@@ -13448,6 +13347,110 @@
           "sx": 1,
           "sy": 1,
           "sz": 1
+        }
+      ]
+    }
+  ],
+  "libraries": [
+    {
+      "id": "lib_6_0_2x1",
+      "col": 6,
+      "row": 0,
+      "cols": 2,
+      "rows": 1,
+      "rot": 0,
+      "furniture": [
+        {
+          "_uid": "conf_6_0_2x1_table_0",
+          "type": "conference_table",
+          "id": "table",
+          "x": 138.7,
+          "y": 108.7,
+          "w": 150,
+          "h": 64,
+          "facing": 0
+        },
+        {
+          "_uid": "conf_6_0_2x1_screen_1",
+          "type": "projection_screen",
+          "id": "screen",
+          "x": 280.3,
+          "y": 136.7,
+          "w": 110,
+          "h": 14,
+          "facing": 270
+        },
+        {
+          "_uid": "conf_6_0_2x1_chair_n2_2",
+          "type": "cushion_chair",
+          "id": "chair_n2",
+          "x": 223.8,
+          "y": 48.9,
+          "facing": 0
+        },
+        {
+          "_uid": "conf_6_0_2x1_chair_s2_3",
+          "type": "cushion_chair",
+          "id": "chair_s2",
+          "x": 223.4,
+          "y": 108.6,
+          "facing": 180
+        },
+        {
+          "_uid": "conf_6_0_2x1_door_4",
+          "type": "door",
+          "x": 57.4,
+          "y": 171,
+          "w": 40,
+          "h": 8,
+          "facing": 0,
+          "hinge": "left",
+          "open": 0.38,
+          "doorEdge": "s",
+          "pitch": 0,
+          "roll": 0
+        },
+        {
+          "_uid": "conf_6_0_2x1_cushion_chair_5",
+          "type": "cushion_chair",
+          "x": 190.2,
+          "y": 48.8,
+          "facing": 0
+        },
+        {
+          "_uid": "conf_6_0_2x1_cushion_chair_6",
+          "type": "cushion_chair",
+          "x": 154.8,
+          "y": 48.3,
+          "facing": 0
+        },
+        {
+          "_uid": "conf_6_0_2x1_cushion_chair_7",
+          "type": "cushion_chair",
+          "x": 188.4,
+          "y": 109.3,
+          "facing": 180
+        },
+        {
+          "_uid": "conf_6_0_2x1_cushion_chair_8",
+          "type": "cushion_chair",
+          "x": 149.9,
+          "y": 110.2,
+          "facing": 180
+        },
+        {
+          "_uid": "conf_6_0_2x1_cushion_chair_9",
+          "type": "cushion_chair",
+          "x": 129.6,
+          "y": 83.1,
+          "facing": 90
+        },
+        {
+          "_uid": "conf_6_0_2x1_cushion_chair_10",
+          "type": "cushion_chair",
+          "x": 249.4,
+          "y": 77.6,
+          "facing": 270
         }
       ]
     }

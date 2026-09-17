@@ -47,6 +47,7 @@ const KIND = {
   K: "kitchen",
   C: "conference",
   R: "recreation",
+  L: "library",
 };
 
 const ASSETS = {
@@ -878,10 +879,11 @@ const floor = {
     K: "kitchen",
     C: "conference",
     R: "recreation",
+    L: "library",
   },
   cells: CELLS,
   walkable,
-  walkableKinds: ["channel", "elevator", "kitchen", "recreation"],
+  walkableKinds: ["channel", "elevator", "kitchen", "recreation", "library"],
   spawn: {
     id: "elevator",
     col: elev.col,

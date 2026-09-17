@@ -11,12 +11,26 @@ import {
   clampDoorToSouthWall,
   conferencePerimeter,
   defaultConferenceTemplate,
+  defaultLibraryTemplate,
   defaultRecreationTemplate,
   kindAt,
 } from "./grid";
 import type { FloorPlate, FurnitureItem, OfficeInstance, OfficeTemplate } from "./types";
 
-export type RoomKind = "office" | "cubicle" | "conference" | "recreation";
+export type RoomKind = "office" | "cubicle" | "conference" | "recreation" | "library";
+
+function usesConferenceShell(kind: RoomKind) {
+  return kind === "conference" || kind === "library";
+}
+
+function assignRoomUserData(group: THREE.Object3D, kind: RoomKind, instance: OfficeInstance) {
+  group.userData.cellKind = kind;
+  group.userData.office = kind === "office" ? instance : undefined;
+  group.userData.cubicle = kind === "cubicle" ? instance : undefined;
+  group.userData.conference = kind === "conference" ? instance : undefined;
+  group.userData.recreation = kind === "recreation" ? instance : undefined;
+  group.userData.library = kind === "library" ? instance : undefined;
+}
 
 export const ROOM_ROT_Y: Record<number, number> = {
   0: 0,
@@ -189,11 +203,7 @@ function stampInstance(
   const furnLp = localPlateFor(plate, cols, rows);
   const group = new THREE.Group();
   group.name = instance.id;
-  group.userData.cellKind = kind;
-  group.userData.office = kind === "office" ? instance : undefined;
-  group.userData.cubicle = kind === "cubicle" ? instance : undefined;
-  group.userData.conference = kind === "conference" ? instance : undefined;
-  group.userData.recreation = kind === "recreation" ? instance : undefined;
+  assignRoomUserData(group, kind, instance);
   group.userData.hasExteriorWindows = kind === "office" && officeWindowFacesOutside(plate, instance);
   const [wx, , wz] = officeWorldCenter(instance, plate);
   group.position.set(wx, 0, wz);
@@ -216,6 +226,9 @@ function stampInstance(
           facing: 0,
         },
       ];
+    } else if (kind === "library") {
+      const door = conferencePerimeter(cols, rows, cell).find((item) => item.type === "door");
+      instance.furniture = door ? [copyItem(door, `${instance.id}_door`)] : [];
     } else {
       instance.furniture = template.furniture.map((item, i) => ({
         ...copyItem(item, `${instance.id}_${item.id ?? item._uid}_${i}`),
@@ -244,7 +257,7 @@ function stampInstance(
 
   const door = instance.furniture.find((item) => item.type === "door");
   let walls =
-    kind === "conference"
+    usesConferenceShell(kind)
       ? conferencePerimeter(cols, rows, cell, door?.x).filter((item) => item.type === "wall")
       : template.structure?.filter((item) => item.type !== "door") ?? [];
   if (kind === "office" && !officeWindowFacesOutside(plate, instance)) {
@@ -263,7 +276,7 @@ function stampInstance(
 
   for (const item of instance.furniture) {
     if (item.type === "door") {
-      if (kind === "conference") clampDoorToSouthWall(item, cols, rows, cell);
+      if (usesConferenceShell(kind)) clampDoorToSouthWall(item, cols, rows, cell);
       const doorMesh = createHingedDoor(item, furnLp, frameMat, leafMat);
       doorMesh.userData = {
         item,
@@ -380,10 +393,7 @@ export function syncTemplatedCells(
       const [wx, , wz] = officeWorldCenter(instance, plate);
       group.position.set(wx, 0, wz);
       group.rotation.y = ROOM_ROT_Y[instance.rot] ?? 0;
-      group.userData.office = kind === "office" ? instance : undefined;
-      group.userData.cubicle = kind === "cubicle" ? instance : undefined;
-      group.userData.conference = kind === "conference" ? instance : undefined;
-      group.userData.recreation = kind === "recreation" ? instance : undefined;
+      assignRoomUserData(group, kind, instance);
       group.userData.hasExteriorWindows = kind === "office" && officeWindowFacesOutside(plate, instance);
       continue;
     }
@@ -446,6 +456,20 @@ export async function createRecreations(plate: FloorPlate) {
     plate.recreations,
     "recreations",
     "recreation",
+  );
+}
+
+export async function createLibraries(plate: FloorPlate) {
+  plate.libraryTemplate ??= defaultLibraryTemplate(
+    plate.officeTemplate?.size ?? plate.grid.cellSize,
+  );
+  plate.libraries ??= [];
+  return createTemplatedCells(
+    plate,
+    plate.libraryTemplate,
+    plate.libraries,
+    "libraries",
+    "library",
   );
 }
 
@@ -514,6 +538,7 @@ export function clampObjectToOffice(
   const cz = (_box.min.z + _box.max.z) / 2;
   const inst =
     office.userData?.conference ??
+    office.userData?.library ??
     office.userData?.office ??
     office.userData?.cubicle ??
     office.userData?.recreation;
