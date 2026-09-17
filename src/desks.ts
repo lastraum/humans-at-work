@@ -51,6 +51,13 @@ function isCouchLike(type: string) {
   return type === "couch" || type.includes("sofa");
 }
 
+/** Lounge sofas/couches store sit direction in `item.facing`. Kenney desk chairs face the opposite way. */
+function sitFacingOf(itemFacing: number, roomRot: number, type: string) {
+  const furnFacing = (((itemFacing ?? 0) + roomRot) % 360 + 360) % 360;
+  if (isCouchLike(type) || type.startsWith("lounge")) return furnFacing;
+  return (furnFacing + 180) % 360;
+}
+
 function itemNodeFrom(obj: THREE.Object3D | null): THREE.Object3D | null {
   let node: THREE.Object3D | null = obj;
   while (node) {
@@ -81,8 +88,7 @@ export function furnitureSeat(
   const box = new THREE.Box3().setFromObject(node);
   const center = box.getCenter(new THREE.Vector3());
   const item = node.userData.item as { facing?: number; type?: string };
-  const furnFacing = (((item.facing ?? 0) + roomRot) % 360 + 360) % 360;
-  const facing = (furnFacing + 180) % 360;
+  const facing = sitFacingOf(item.facing ?? 0, roomRot, item.type ?? "");
   const rad = (facing * Math.PI) / 180;
   if (click && isCouchLike(item.type ?? "")) {
     const alongX = Math.sin(rad + Math.PI / 2);

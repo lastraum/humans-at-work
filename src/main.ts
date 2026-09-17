@@ -409,6 +409,20 @@ loadPlate()
       else delete claim.officeAd;
       desks.apply(claim);
     };
+    const paintOwnOfficeAd = () => {
+      const mine = desks.mine(identity.id);
+      if (!mine || mine.kind !== "office") return;
+      if (officeAdState.enabled && officeAdState.url) {
+        applyDeskAd(mine.deskId, identity.id, {
+          deskId: mine.deskId,
+          peerId: identity.id,
+          enabled: true,
+          url: officeAdState.url,
+        });
+        return;
+      }
+      applyDeskAd(mine.deskId, identity.id, null);
+    };
 
     let reservations: ConferenceReservation[] = [];
     let confReserve: ReturnType<typeof attachConferenceReserve> | null = null;
@@ -1123,6 +1137,7 @@ loadPlate()
           }
           officeAdState = saved.officeAd;
           mac.setOfficeAd({ enabled: officeAdState.enabled, previewUrl: officeAdState.url });
+          paintOwnOfficeAd();
           room.sendOfficeAd(officeAdState.enabled);
         },
         setImage: async (file) => {
@@ -1139,6 +1154,7 @@ loadPlate()
             if (!saved.ok) return { ok: false, error: saved.error || "Couldn't save." };
             officeAdState = saved.officeAd;
             mac.setOfficeAd({ enabled: officeAdState.enabled, previewUrl: officeAdState.url });
+            paintOwnOfficeAd();
             room.sendOfficeAd(officeAdState.enabled);
             return { ok: true, previewUrl: officeAdState.url };
           } catch (err) {

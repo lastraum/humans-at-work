@@ -803,10 +803,15 @@ body.editing #mac-stack {
   margin-top: 0;
 }
 
-#mac-name-save {
+#mac-name-save,
+#mac-ad-save {
   flex: 0 0 auto;
   margin-top: 0;
   width: auto;
+}
+
+#mac-ad-save {
+  margin-top: 6px;
 }
 
 #mac-office-ad {

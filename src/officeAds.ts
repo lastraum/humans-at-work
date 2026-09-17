@@ -3,24 +3,40 @@ import * as THREE from "three";
 const AD_NAME = "office-ad";
 const MULLION = 0.04;
 const OUTSET = 0.014;
+const _world = new THREE.Vector3();
 
+function localX(group: THREE.Object3D, node: THREE.Object3D) {
+  node.getWorldPosition(_world);
+  group.worldToLocal(_world);
+  return _world.x;
+}
+
+function officeDoor(group: THREE.Object3D): THREE.Object3D | null {
+  let found: THREE.Object3D | null = null;
+  group.traverse((node) => {
+    if (found) return;
+    const item = node.userData?.item as { type?: string } | undefined;
+    if (node.userData?.isDoor || item?.type === "door") found = node;
+  });
+  return found;
+}
+
+/**
+ * Door wall is template north (`windowEdge === "n"`). From outside looking at
+ * that wall (local +Z), right is −X — the panes to the right of the door.
+ */
 function exteriorGlasses(group: THREE.Object3D): THREE.Mesh[] {
-  const list: THREE.Mesh[] = [];
+  const door = officeDoor(group);
+  const doorX = door ? localX(group, door) : Number.POSITIVE_INFINITY;
+  const onDoorWall: THREE.Mesh[] = [];
   group.traverse((node) => {
     if (!(node instanceof THREE.Mesh) || !node.userData?.windowGlass) return;
-    if (node.userData.windowEdge !== "s") return;
-    list.push(node);
+    if (node.userData.windowEdge !== "n") return;
+    onDoorWall.push(node);
   });
-  const local = new THREE.Vector3();
-  const scratch = new THREE.Vector3();
-  list.sort((a, b) => {
-    a.getWorldPosition(local);
-    group.worldToLocal(local);
-    const ax = local.x;
-    b.getWorldPosition(scratch);
-    group.worldToLocal(scratch);
-    return ax - scratch.x;
-  });
+  const rightOfDoor = onDoorWall.filter((glass) => localX(group, glass) < doorX - 0.02);
+  const list = rightOfDoor.length ? rightOfDoor : onDoorWall;
+  list.sort((a, b) => localX(group, a) - localX(group, b));
   return list;
 }
 
@@ -113,21 +129,42 @@ function decorateGlass(glass: THREE.Mesh, mat: THREE.MeshStandardMaterial, u0: n
   const root = new THREE.Group();
   root.name = AD_NAME;
   root.userData.officeAd = true;
-  const zOut = glassTh / 2 + OUTSET;
+  const mag = glassTh / 2 + OUTSET;
+  const edge = String(glass.userData.windowEdge ?? "n");
+  // North/west exteriors face −Z / −X; south/east face +Z / +X.
+  const outward = edge === "n" || edge === "w" ? -1 : 1;
   if (split) {
     const paneW = Math.max((glassW - MULLION) / 2, 0.06);
     const offset = paneW / 2 + MULLION / 2;
     if (alongX) {
-      addPane(root, mat, paneW, glassH, -offset, 0, zOut, 0, 0, 0.5);
-      addPane(root, mat, paneW, glassH, offset, 0, zOut, 0, 0.5, 1);
+      const z = outward * mag;
+      const rotY = outward < 0 ? Math.PI : 0;
+      if (outward < 0) {
+        addPane(root, mat, paneW, glassH, -offset, 0, z, rotY, 0.5, 1);
+        addPane(root, mat, paneW, glassH, offset, 0, z, rotY, 0, 0.5);
+      } else {
+        addPane(root, mat, paneW, glassH, -offset, 0, z, rotY, 0, 0.5);
+        addPane(root, mat, paneW, glassH, offset, 0, z, rotY, 0.5, 1);
+      }
     } else {
-      addPane(root, mat, paneW, glassH, zOut, 0, -offset, Math.PI / 2, 0, 0.5);
-      addPane(root, mat, paneW, glassH, zOut, 0, offset, Math.PI / 2, 0.5, 1);
+      const x = outward * mag;
+      const rotY = outward < 0 ? -Math.PI / 2 : Math.PI / 2;
+      if (outward < 0) {
+        addPane(root, mat, paneW, glassH, x, 0, -offset, rotY, 0.5, 1);
+        addPane(root, mat, paneW, glassH, x, 0, offset, rotY, 0, 0.5);
+      } else {
+        addPane(root, mat, paneW, glassH, x, 0, -offset, rotY, 0, 0.5);
+        addPane(root, mat, paneW, glassH, x, 0, offset, rotY, 0.5, 1);
+      }
     }
   } else if (alongX) {
-    addPane(root, mat, glassW, glassH, 0, 0, zOut, 0, u0, u1);
+    const z = outward * mag;
+    const rotY = outward < 0 ? Math.PI : 0;
+    addPane(root, mat, glassW, glassH, 0, 0, z, rotY, u0, u1);
   } else {
-    addPane(root, mat, glassW, glassH, zOut, 0, 0, Math.PI / 2, u0, u1);
+    const x = outward * mag;
+    const rotY = outward < 0 ? -Math.PI / 2 : Math.PI / 2;
+    addPane(root, mat, glassW, glassH, x, 0, 0, rotY, u0, u1);
   }
   glass.add(root);
 }
@@ -139,15 +176,20 @@ function mountAd(group: THREE.Object3D, tex: THREE.Texture) {
     return;
   }
   clearOfficeAd(group);
-  const rightTwo = glasses.length >= 2 ? glasses.slice(-2) : glasses;
+  const rightTwo = glasses.length >= 2 ? glasses.slice(0, 2) : glasses;
   const splitOne = rightTwo.length === 1;
   if (splitOne) {
     decorateGlass(rightTwo[0], adMaterial(tex), 0, 1, true);
     return;
   }
   const shared = adMaterial(tex);
-  decorateGlass(rightTwo[0], shared, 0, 0.5, false);
-  decorateGlass(rightTwo[1], shared, 0.5, 1, false);
+  // Lowest local X is rightmost from outside on the door wall.
+  decorateGlass(rightTwo[0], shared, 0.5, 1, false);
+  decorateGlass(rightTwo[1], shared, 0, 0.5, false);
+}
+
+function mountedOnTargets(group: THREE.Object3D, glasses: THREE.Mesh[]) {
+  return glasses.some((glass) => Boolean(glass.getObjectByName(AD_NAME)));
 }
 
 const loader = new THREE.TextureLoader();
@@ -160,7 +202,8 @@ export function applyOfficeAd(group: THREE.Object3D, url: string | null) {
     clearOfficeAd(group);
     return;
   }
-  if (prev === url && group.getObjectByName(AD_NAME)) return;
+  const targets = exteriorGlasses(group);
+  if (prev === url && group.getObjectByName(AD_NAME) && mountedOnTargets(group, targets)) return;
   const gen = (Number(group.userData.officeAdGen) || 0) + 1;
   group.userData.officeAdGen = gen;
   group.userData.officeAdUrl = url;

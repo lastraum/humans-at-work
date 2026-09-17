@@ -205,34 +205,46 @@ export function attachMac(opts: {
   const adPreview = root.querySelector<HTMLImageElement>("#mac-ad-preview");
   const adLabel = root.querySelector<HTMLElement>("#mac-ad-drop-label");
   const adHint = root.querySelector<HTMLElement>("#mac-ad-hint");
-  const adHintRest = adHint?.textContent ?? "Images are resized to 512px on the long side.";
+  const adSave = root.querySelector<HTMLButtonElement>("#mac-ad-save");
+  const adHintRest = adHint?.textContent ?? "Pick or drop an image, then Save. Images are resized to 512px on the long side.";
   let adHintTimer = 0;
-  const flashAd = (text: string, ok: boolean) => {
+  let pendingAd: File | null = null;
+  let pendingPreview: string | null = null;
+  const flashAd = (text: string, ok: boolean, persist = false) => {
     if (!adHint) return;
     adHint.textContent = text;
     adHint.classList.toggle("ok", ok);
     adHint.classList.toggle("err", !ok);
     window.clearTimeout(adHintTimer);
+    if (persist) return;
     adHintTimer = window.setTimeout(() => {
       adHint.textContent = adHintRest;
       adHint.classList.remove("ok", "err");
     }, 2200);
   };
-  const paintOfficeAd = (state?: MacOfficeAd) => {
-    const next = state ?? opts.officeAd?.get() ?? { enabled: false, previewUrl: null };
-    if (adEnabled) adEnabled.checked = Boolean(next.enabled);
-    const url = next.previewUrl ?? "";
+  const showAdPreview = (url: string | null | undefined) => {
+    const next = url ?? "";
     if (adPreview) {
-      if (url) {
-        adPreview.src = url;
+      if (next) {
+        adPreview.src = next;
         adPreview.hidden = false;
       } else {
         adPreview.removeAttribute("src");
         adPreview.hidden = true;
       }
     }
-    adDrop?.classList.toggle("has-image", Boolean(url));
-    if (adLabel) adLabel.textContent = url ? "Replace image" : "Drop an image or click to choose";
+    adDrop?.classList.toggle("has-image", Boolean(next));
+    if (adLabel) adLabel.textContent = next ? "Replace image" : "Drop an image or click to choose";
+  };
+  const paintOfficeAd = (state?: MacOfficeAd) => {
+    const next = state ?? opts.officeAd?.get() ?? { enabled: false, previewUrl: null };
+    if (adEnabled) adEnabled.checked = Boolean(next.enabled);
+    if (pendingPreview) {
+      showAdPreview(pendingPreview);
+    } else {
+      showAdPreview(next.previewUrl);
+    }
+    if (adSave) adSave.disabled = !pendingAd;
   };
   adEnabled?.addEventListener("change", () => {
     void opts.officeAd?.setEnabled(Boolean(adEnabled.checked));
@@ -254,24 +266,45 @@ export function attachMac(opts: {
     event.preventDefault();
     adDrop.classList.remove("over");
     const file = event.dataTransfer?.files?.[0];
-    if (file) void takeAdFile(file);
+    if (file) takeAdFile(file);
   });
   adFile?.addEventListener("change", () => {
     const file = adFile.files?.[0];
     adFile.value = "";
-    if (file) void takeAdFile(file);
+    if (file) takeAdFile(file);
   });
-  const takeAdFile = async (file: File) => {
+  const takeAdFile = (file: File) => {
     if (!opts.officeAd) return;
-    flashAd("Saving…", true);
-    const result = await opts.officeAd.setImage(file);
-    if (!result.ok) {
-      flashAd(result.error || "Couldn't save.", false);
+    if (pendingPreview?.startsWith("blob:")) URL.revokeObjectURL(pendingPreview);
+    pendingAd = file;
+    pendingPreview = URL.createObjectURL(file);
+    showAdPreview(pendingPreview);
+    if (adSave) adSave.disabled = false;
+    flashAd("Click Save to upload.", true, true);
+  };
+  const commitAd = () => {
+    if (!opts.officeAd) return;
+    if (!pendingAd) {
+      flashAd("Choose an image first.", false);
       return;
     }
-    paintOfficeAd({ enabled: adEnabled?.checked ?? true, previewUrl: result.previewUrl });
-    flashAd("Saved.", true);
+    const file = pendingAd;
+    if (adSave) adSave.disabled = true;
+    flashAd("Saving…", true, true);
+    void opts.officeAd.setImage(file).then((result) => {
+      if (!result.ok) {
+        if (adSave) adSave.disabled = !pendingAd;
+        flashAd(result.error || "Couldn't save.", false);
+        return;
+      }
+      if (pendingPreview?.startsWith("blob:")) URL.revokeObjectURL(pendingPreview);
+      pendingAd = null;
+      pendingPreview = null;
+      paintOfficeAd({ enabled: adEnabled?.checked ?? true, previewUrl: result.previewUrl });
+      flashAd("Saved to server.", true);
+    });
   };
+  adSave?.addEventListener("click", commitAd);
   paintOfficeAd();
 
   paintAccount(opts.auth?.email);
