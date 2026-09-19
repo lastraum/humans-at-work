@@ -4,6 +4,7 @@ dist
 .env
 .env.local
 data/accounts.json
+data/metrics.json
 
 data/conference-reservations.json
 data/office-ads/

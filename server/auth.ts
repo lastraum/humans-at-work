@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnv, type Plugin } from "vite";
 import { MAX_ID, MAX_NAME } from "../src/protocol";
+import { recordSignup } from "./metrics";
 
 const AUTH_PREFIX = "/__auth";
 const OFFICE_ADS_PREFIX = "/__office-ads";
@@ -318,7 +319,7 @@ function upsertUser(
     name?: string;
     color?: string;
   },
-): User {
+): { user: User; isNew: boolean } {
   const now = Date.now();
   let user =
     (opts.googleSub ? findUser(store, (row) => row.googleSub === opts.googleSub) : undefined) ??
@@ -327,7 +328,7 @@ function upsertUser(
     user.email = opts.email;
     if (opts.googleSub) user.googleSub = opts.googleSub;
     user.lastLoginAt = now;
-    return user;
+    return { user, isNew: false };
   }
   const guestId = opts.guestId;
   const takeGuest = Boolean(guestId && !store.users.some((row) => row.id === guestId));
@@ -341,7 +342,7 @@ function upsertUser(
     lastLoginAt: now,
   };
   store.users.push(user);
-  return user;
+  return { user, isNew: true };
 }
 
 function sessionOf(store: Store, token: string) {
@@ -556,19 +557,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
         return { error: "wrong code" as const };
       }
       store.codes = store.codes.filter((item) => item.email !== email);
-      const user = upsertUser(store, {
+      const { user, isNew } = upsertUser(store, {
         email,
         guestId: clampGuestId(body.guestId),
         name: clampName(body.name),
         color: clampColor(body.color),
       });
       const session = mintSession(store, user);
-      return { user, token: session.token };
+      return { user, token: session.token, isNew };
     });
     if ("error" in result) {
       json(res, 401, { ok: false, error: result.error });
       return;
     }
+    if (result.isNew) void recordSignup();
     json(res, 200, { ok: true, token: result.token, user: publicUser(result.user) });
     return;
   }
@@ -592,7 +594,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
       return;
     }
     const result = await withStore((store) => {
-      const user = upsertUser(store, {
+      const { user, isNew } = upsertUser(store, {
         email: google.email,
         googleSub: google.sub,
         guestId: clampGuestId(body.guestId),
@@ -600,8 +602,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
         color: clampColor(body.color),
       });
       const session = mintSession(store, user);
-      return { user, token: session.token };
+      return { user, token: session.token, isNew };
     });
+    if (result.isNew) void recordSignup();
     json(res, 200, { ok: true, token: result.token, user: publicUser(result.user) });
     return;
   }
