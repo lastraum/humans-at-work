@@ -619,6 +619,7 @@ export function attachEditor(opts: {
     ...(item.sy !== undefined && item.sy !== 1 ? { sy: item.sy } : {}),
     ...(item.sz !== undefined && item.sz !== 1 ? { sz: item.sz } : {}),
     ...(item.elevation !== undefined ? { elevation: item.elevation } : {}),
+    ...(item.occupied ? { occupied: item.occupied } : {}),
   });
 
   const commit = () => {
@@ -1043,7 +1044,11 @@ export function attachEditor(opts: {
       <textarea id="copy-json" readonly>${json}</textarea>
       <button type="button" id="copy-btn">Copy item JSON</button>
       <button type="button" id="copy-all-btn">${copyAllLabel}</button>
-      <div class="hint">Tab PRS · ⌃C/V duplicate · Del remove scene items</div>
+      <div class="hint">${
+        item.type.includes("chair")
+          ? "Chair: Tab → Rotate, then drag the gizmo. Q/E snap 90°. Facing field below. Check “move all children” to apply to every office."
+          : "Tab PRS · ⌃C/V duplicate · Del remove scene items"
+      }</div>
     `;
     bindInspectorInputs();
     panel.querySelector("#sync-siblings")?.addEventListener("change", (event) => {

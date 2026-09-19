@@ -11,8 +11,8 @@ import type { CellKind, FloorPlate, FurnitureItem } from "./types";
 
 /** Pull openings off the wall plane so glass/frames don't share faces with walls. */
 const OPENING_INSET = 0.03;
-const WINDOW_INSET = 0.05;
-const WALL_SHRINK = 0.018;
+const WINDOW_INSET = 0.02;
+const WALL_SHRINK = 0;
 
 function insetByEdge(obj: THREE.Object3D, edge: string, amount: number) {
   if (edge === "n") obj.position.z += amount;
@@ -53,7 +53,6 @@ export function createGround(plate: FloorPlate) {
 
   fillTiles(tiles, plate);
   root.add(tiles);
-  root.add(createRoof(plate));
   root.add(createParkingLot(plate));
   root.add(createPark(plate));
   return root;
@@ -95,10 +94,7 @@ export function refreshGround(ground: THREE.Group, plate: FloorPlate) {
   const tiles = ground.getObjectByName("tiles") as THREE.Group | undefined;
   if (tiles) fillTiles(tiles, plate);
   const roof = ground.getObjectByName("roof");
-  if (roof) {
-    ground.remove(roof);
-    ground.add(createRoof(plate));
-  }
+  if (roof) ground.remove(roof);
   const cars = ground.getObjectByName("parking-lot");
   if (cars) {
     ground.remove(cars);
@@ -666,19 +662,19 @@ export function createHingedDoor(
     frame.add(jamb(-leafLen / 2, 0, leafThick, frameMat));
     frame.add(jamb(leafLen / 2, 0, leafThick, frameMat));
     const lintel = new THREE.Mesh(
-      new THREE.BoxGeometry(leafLen + 0.06, 0.08, leafThick + 0.04),
+      new THREE.BoxGeometry(leafLen + 0.08, 0.24, leafThick + 0.05),
       frameMat,
     );
-    lintel.position.set(0, 1.01, 0);
+    lintel.position.set(0, 1.09, 0);
     frame.add(lintel);
   } else {
     frame.add(jamb(0, -leafLen / 2, leafThick, frameMat, true));
     frame.add(jamb(0, leafLen / 2, leafThick, frameMat, true));
     const lintel = new THREE.Mesh(
-      new THREE.BoxGeometry(leafThick + 0.04, 0.08, leafLen + 0.06),
+      new THREE.BoxGeometry(leafThick + 0.05, 0.24, leafLen + 0.08),
       frameMat,
     );
-    lintel.position.set(0, 1.01, 0);
+    lintel.position.set(0, 1.09, 0);
     frame.add(lintel);
   }
 
@@ -763,10 +759,10 @@ function jamb(
   alongZ = false,
 ) {
   const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(alongZ ? thick + 0.03 : 0.05, 1, alongZ ? 0.05 : thick + 0.03),
+    new THREE.BoxGeometry(alongZ ? thick + 0.03 : 0.05, 1.2, alongZ ? 0.05 : thick + 0.03),
     mat,
   );
-  mesh.position.set(x, 0.5, z);
+  mesh.position.set(x, 0.6, z);
   return mesh;
 }
 
@@ -782,12 +778,9 @@ export function createWindow(
   const [wx, , wz] = toWorld(item.x, item.y, plate);
   const len = length * SCALE;
   const th = Math.max(thick * SCALE, 0.04);
-  /** Stay inside the opening so glass/sill don't share faces with wall stubs. */
-  const endGap = 0.03;
   const jambW = 0.08;
-  const frameLen = Math.max(len - endGap * 2, 0.2);
+  const frameLen = Math.max(len + WALL_SHRINK, 0.2);
   const frameTh = Math.max(th - 0.024, 0.04);
-  const glassW = Math.max(frameLen - jambW * 2 - 0.04, 0.12);
   const glassTh = 0.018;
   const root = new THREE.Group();
   root.position.set(wx, item.elevation ?? 0, wz);
@@ -798,7 +791,11 @@ export function createWindow(
 
   const sillH = 0.32;
   const head = 0.95;
-  const glassH = head - sillH - 0.06;
+  const lintelH = 0.08;
+  const glassW = Math.max(frameLen - jambW * 2 + 0.04, 0.12);
+  const glassBottom = sillH - 0.03;
+  const glassTop = head + lintelH / 2 - 0.01;
+  const glassH = Math.max(glassTop - glassBottom, 0.12);
 
   const sill = new THREE.Mesh(
     new THREE.BoxGeometry(alongX ? frameLen : frameTh, sillH, alongX ? frameTh : frameLen),
@@ -863,18 +860,19 @@ export function createWindow(
   glass.name = "window-glass";
   glass.userData.windowGlass = true;
   glass.userData.windowEdge = edge;
-  glass.position.set(0, sillH + glassH / 2, 0);
+  glass.position.set(0, (glassBottom + glassTop) / 2, 0);
   frame.add(glass);
 
+  const mullionH = head - sillH - 0.04;
   const mullion = new THREE.Mesh(
     new THREE.BoxGeometry(
       alongX ? 0.04 : frameTh * 0.7,
-      glassH,
+      mullionH,
       alongX ? frameTh * 0.7 : 0.04,
     ),
     frameMat,
   );
-  mullion.position.set(0, sillH + glassH / 2, 0);
+  mullion.position.set(0, sillH + mullionH / 2, 0);
   frame.add(mullion);
 
   root.add(frame);
@@ -908,6 +906,7 @@ function addKitchenSplit(
   body.position.set(cx, h / 2, wz);
   body.castShadow = true;
   body.receiveShadow = true;
+  body.userData.blocksNav = true;
   const base = new THREE.Mesh(new THREE.BoxGeometry(len, 0.06, thick), baseMat);
   base.position.set(cx, 0.03, wz);
   group.add(body, base);
@@ -954,6 +953,7 @@ function addElevatorShafts(root: THREE.Group, plate: FloorPlate) {
     mesh.position.set(x, y, z);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
+    mesh.userData.blocksNav = true;
     parent.add(mesh);
   };
 

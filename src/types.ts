@@ -18,6 +18,8 @@ export type FurnitureItem = {
   open?: number;
   doorEdge?: "n" | "s" | "e" | "w";
   windowEdge?: "n" | "s" | "e" | "w";
+  /** Desk chair pose when the office is claimed. Vacant pose is x/y/facing. */
+  occupied?: { x: number; y: number; facing?: number };
 };
 
 export type Avatar = {

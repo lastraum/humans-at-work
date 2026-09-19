@@ -96,6 +96,9 @@ export function connectWorldChat(opts: {
       quiet = on;
       applyVoiceQuiet();
     },
+    setName(name: string) {
+      if (this.ready() && name) void room.localParticipant.setName(name);
+    },
     sendChat(text: string, channel: ChatChannel, destinations: string[], deskId?: string) {
       if (quiet) return true;
       if (!this.ready()) return false;

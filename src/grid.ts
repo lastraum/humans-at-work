@@ -74,6 +74,11 @@ export function kindAt(plate: FloorPlate, col: number, row: number): CellKind | 
   return CHAR_KIND[plate.cells[row][col]] ?? null;
 }
 
+export function inElevator(plate: FloorPlate, col: number, row: number) {
+  if (kindAt(plate, col, row) === "elevator") return true;
+  return (plate.zones.elevator?.cells ?? []).some((cell) => cell.col === col && cell.row === row);
+}
+
 export function setCellKind(plate: FloorPlate, col: number, row: number, kind: CellKind) {
   if (row < 0 || col < 0 || row >= plate.grid.rows || col >= plate.grid.cols) return;
   const line = plate.cells[row];

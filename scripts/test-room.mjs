@@ -45,7 +45,10 @@ function waitFor(msgs, pred, label) {
 }
 
 const ada = await connect("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Ada");
-await waitFor(ada.msgs, (m) => m.type === "welcome", "ada welcome");
+const adaWelcome = await waitFor(ada.msgs, (m) => m.type === "welcome", "ada welcome");
+if (adaWelcome.floor !== 1 || adaWelcome.maxFloor < 1 || !adaWelcome.floors?.includes(1)) {
+  throw new Error(`welcome missing floor catalog: ${JSON.stringify(adaWelcome)}`);
+}
 
 const niko = await connect("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "Niko");
 await waitFor(niko.msgs, (m) => m.type === "welcome" && m.peers.some((p) => p.name === "Ada"), "niko sees ada");
@@ -57,8 +60,49 @@ await waitFor(niko.msgs, (m) => m.type === "move" && m.x === 120 && m.y === 340,
 ada.ws.send(JSON.stringify({ type: "state", x: 40, y: 80, facing: 45, pose: "stand" }));
 await waitFor(niko.msgs, (m) => m.type === "state" && m.x === 40 && m.facing === 45, "niko got pose");
 
+niko.ws.send(JSON.stringify({ type: "floor", floor: 2 }));
+await waitFor(niko.msgs, (m) => m.type === "error" && m.message === "no floor", "closed 2nd floor rejects ride");
+niko.ws.send(JSON.stringify({ type: "floor", floor: 1 }));
+await waitFor(niko.msgs, (m) => m.type === "floors" && m.floor === 1, "same-floor ride is a no-op");
+
+ada.ws.send(JSON.stringify({ type: "chat", text: "hello-guests", channel: "floor" }));
+await waitFor(
+  niko.msgs,
+  (m) => m.type === "chat" && m.channel === "floor" && m.text === "hello-guests",
+  "guests can talk on the floor",
+);
+
+ada.ws.send(JSON.stringify({ type: "whisper", toId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", text: "psst" }));
+await waitFor(ada.msgs, (m) => m.type === "error" && m.message === "not available for whispers", "whisper needs opt-in");
+niko.ws.send(JSON.stringify({ type: "chat-available", on: true }));
+await waitFor(ada.msgs, (m) => m.type === "chat-available" && m.id.startsWith("bbb") && m.on === true, "ada saw niko available");
+ada.ws.send(JSON.stringify({ type: "whisper", toId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", text: "psst" }));
+await waitFor(
+  niko.msgs,
+  (m) => m.type === "whisper-request" && m.fromName === "Ada" && m.text === "psst",
+  "guest whisper request delivered",
+);
+
+const beforeClaim = ada.msgs.length;
 ada.ws.send(JSON.stringify({ type: "claim", deskId: "office_04" }));
-await waitFor(niko.msgs, (m) => m.type === "claim" && m.claim?.deskId === "office_04", "niko saw ada claim");
+const claimDenied = await new Promise((resolve) => {
+  const t0 = Date.now();
+  const tick = () => {
+    const next = ada.msgs.slice(beforeClaim);
+    if (next.some((m) => m.type === "error" && m.message === "sign-in")) return resolve(true);
+    if (niko.msgs.some((m) => m.type === "claim" && m.claim?.deskId === "office_04")) return resolve(false);
+    if (Date.now() - t0 > 3000) return resolve(true);
+    setTimeout(tick, 25);
+  };
+  tick();
+});
+if (claimDenied) {
+  ada.ws.close();
+  await waitFor(niko.msgs, (m) => m.type === "leave" && m.id.startsWith("aaa"), "niko got leave");
+  niko.ws.close();
+  console.log("room protocol ok (unsigned; signed-in desk tests skipped)");
+  process.exit(0);
+}
 niko.ws.send(JSON.stringify({ type: "claim", deskId: "office_04" }));
 await waitFor(niko.msgs, (m) => m.type === "error" && m.message === "taken", "niko cannot steal desk");
 

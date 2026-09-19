@@ -17,6 +17,10 @@ export type Peer = {
   color: string;
   /** Guest ETH address for DCL LiveKit identity targeting. */
   address?: string;
+  /** Story floor (same plate, occupancy filter). 1-based. */
+  floor?: number;
+  /** Opt-in: others may send a whisper request. Default off. */
+  chatAvailable?: boolean;
 } & Pose;
 
 export type DeskKind = "office" | "cubicle";
@@ -58,6 +62,10 @@ export type Claim = {
   privacy: Privacy;
   /** Unix ms when they checked in. */
   since: number;
+  /** Story floor this desk occupies. Same plate; occupancy is per floor. */
+  floor?: number;
+  /** IANA timezone shown on the door when the occupant shares location. */
+  timezone?: string;
   /** Present only for occupied offices with an enabled window ad. */
   officeAd?: OfficeAd;
 };
@@ -67,10 +75,15 @@ export type ClientMsg =
   | { type: "move"; x: number; y: number; facing?: number }
   | ({ type: "state" } & Pose)
   | { type: "profile"; name: string }
-  | { type: "claim"; deskId: string }
+  | { type: "claim"; deskId: string; timezone?: string }
+  | { type: "timezone"; tz: string | null }
   | { type: "release" }
   | { type: "privacy"; privacy: Privacy }
   | { type: "chat"; text: string; channel?: ChatChannel }
+  | { type: "chat-available"; on: boolean }
+  | { type: "whisper"; toId: string; text?: string }
+  | { type: "whisper-reply"; fromId: string; accept: boolean }
+  | { type: "whisper-end"; peerId?: string }
   | { type: "knock"; deskId: string }
   | { type: "knock-reply"; fromId: string; accept: boolean }
   | { type: "boot" }
@@ -78,18 +91,26 @@ export type ClientMsg =
   | { type: "unblock"; id: string }
   | { type: "reserve"; roomId: string; day: string; startMin: number; durationMin: 30 | 60 }
   | { type: "cancel-reserve"; id: string }
-  | { type: "office-ad"; enabled: boolean };
+  | { type: "office-ad"; enabled: boolean }
+  | { type: "floor"; floor: number };
 
 export type ServerMsg =
-  | { type: "welcome"; roomId: string; self: Peer; peers: Peer[]; claims: Claim[]; reservations?: ConferenceReservation[]; blocked?: string[]; blockedBy?: string[]; officeAds?: OfficeAd[] }
+  | { type: "welcome"; roomId: string; self: Peer; peers: Peer[]; claims: Claim[]; reservations?: ConferenceReservation[]; blocked?: string[]; blockedBy?: string[]; officeAds?: OfficeAd[]; floor?: number; maxFloor?: number; floors?: number[] }
   | { type: "join"; peer: Peer }
   | { type: "leave"; id: string }
+  | { type: "floors"; floor: number; maxFloor: number; floors: number[] }
+  | { type: "floor"; floor: number; maxFloor: number; floors: number[]; peers: Peer[]; claims: Claim[]; officeAds?: OfficeAd[] }
   | { type: "move"; id: string; x: number; y: number; facing?: number }
   | ({ type: "state"; id: string } & Pose)
   | { type: "profile"; id: string; name: string }
   | { type: "claim"; claim: Claim }
   | { type: "release"; deskId: string; peerId: string }
   | { type: "chat"; id: string; name: string; text: string; channel: ChatChannel; deskId?: string }
+  | { type: "chat-available"; id: string; on: boolean }
+  | { type: "whisper-request"; fromId: string; fromName: string; text?: string }
+  | { type: "whisper-open"; peerId: string; name: string; text?: string }
+  | { type: "whisper"; id: string; name: string; text: string; peerId: string }
+  | { type: "whisper-end"; peerId: string; reason?: "left" | "ended" | "declined" }
   | { type: "knock"; deskId: string; fromId: string; fromName: string }
   | { type: "knock-reply"; fromId: string; accept: boolean; deskId: string }
   | { type: "boot"; deskId: string; peerId: string }

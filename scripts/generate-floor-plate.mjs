@@ -745,7 +745,7 @@ function buildOfficeTemplate() {
       id: "chair",
       x: 35,
       y: 70.9,
-      facing: 180,
+      facing: 90,
     },
     {
       _uid: "tpl_pc",

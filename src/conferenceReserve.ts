@@ -2,8 +2,53 @@ import * as THREE from "three";
 import type { ConferenceReservation } from "./protocol";
 import type { FloorPlate, OfficeInstance } from "./types";
 
-/** Day boundaries for the 1hr/day cap. */
+/** Day boundaries for the 1hr/day cap. Pacific unless the player shares location. */
 export const TZ = "America/Los_Angeles";
+const TZ_KEY = "haw-share-tz";
+
+export function shareTimezone() {
+  try {
+    return localStorage.getItem(TZ_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setShareTimezone(on: boolean) {
+  try {
+    localStorage.setItem(TZ_KEY, on ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+export function activeTimeZone() {
+  if (!shareTimezone()) return TZ;
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || TZ;
+}
+
+export function timezoneShort() {
+  const tz = activeTimeZone();
+  try {
+    return (
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: tz,
+        timeZoneName: "short",
+      })
+        .formatToParts(new Date())
+        .find((part) => part.type === "timeZoneName")?.value ?? tz
+    );
+  } catch {
+    return tz;
+  }
+}
+
+export function timezoneLabel() {
+  const tz = activeTimeZone();
+  const short = timezoneShort();
+  const pretty = tz.replace(/_/g, " ");
+  return short && short !== pretty ? `${short} · ${pretty}` : pretty;
+}
 export const SLOT = 30;
 export const DAY_CAP = 60;
 export const BOOK_START_MIN = 8 * 60;
@@ -11,7 +56,7 @@ export const BOOK_END_MIN = 20 * 60;
 
 export function ptDayKey(ms = Date.now()) {
   return new Intl.DateTimeFormat("en-CA", {
-    timeZone: TZ,
+    timeZone: activeTimeZone(),
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -88,7 +133,7 @@ export function nextBookingLabel(
 ): string {
   const day = ptDayKey(now);
   const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ,
+    timeZone: activeTimeZone(),
     hour: "numeric",
     minute: "2-digit",
     hour12: false,
@@ -143,7 +188,7 @@ export function attachConferenceReserve(handlers: ReserveUiHandlers) {
     const all = handlers.getReservations();
     const left = remainingMinutes(all, peerId, day);
     const bookings = roomBookings(all, room.id, day);
-    allowEl.textContent = `${left} min left today (PT) · max ${DAY_CAP} min / person / day`;
+    allowEl.textContent = `${left} min left today · ${timezoneLabel()} · max ${DAY_CAP} min / person / day`;
     errEl.textContent = "";
 
     slotsEl.innerHTML = "";
@@ -170,7 +215,7 @@ export function attachConferenceReserve(handlers: ReserveUiHandlers) {
             selectedDur > left
               ? `only ${left} min left today`
               : start + selectedDur > BOOK_END_MIN
-                ? "runs past 8:00 PM PT"
+                ? `runs past 8:00 PM ${timezoneShort()}`
                 : "conflicts with a booking";
         } else {
           if (selectedStart === start) btn.classList.add("on");
@@ -258,7 +303,7 @@ export function attachConferenceReserve(handlers: ReserveUiHandlers) {
       return;
     }
     if (selectedStart + selectedDur > BOOK_END_MIN) {
-      errEl.textContent = "That duration runs past 8:00 PM PT.";
+      errEl.textContent = `That duration runs past 8:00 PM ${timezoneShort()}.`;
       return;
     }
     handlers.onReserve(room.id, day, selectedStart, selectedDur);

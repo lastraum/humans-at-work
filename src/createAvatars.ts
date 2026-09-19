@@ -18,7 +18,7 @@ function box(w: number, h: number, d: number, color: number, y: number) {
 }
 
 function fillAvatarBody(group: THREE.Object3D, avatar: Avatar) {
-  const keep = group.children.filter((child) => child.name === "name-tag");
+  const keep = group.children.filter((child) => child.name === "name-tag" || child.name === "avatar-hit");
   group.clear();
   for (const child of keep) group.add(child);
   const skin = 0xe8c4a8;
@@ -135,7 +135,19 @@ export function createAvatar(
   applyAvatarTransform(group, avatar, plate);
   const label = opts?.label ?? avatar.id;
   if (label) setAvatarName(group, label);
+  ensureAvatarHit(group);
   return group;
+}
+
+function ensureAvatarHit(group: THREE.Object3D) {
+  if (group.getObjectByName("avatar-hit")) return;
+  const hit = new THREE.Mesh(
+    new THREE.BoxGeometry(0.72, 1.5, 0.72),
+    new THREE.MeshBasicMaterial({ visible: false }),
+  );
+  hit.name = "avatar-hit";
+  hit.position.y = 0.75;
+  group.add(hit);
 }
 
 export function setAvatarPose(group: THREE.Object3D, pose: Avatar["pose"]) {
@@ -145,6 +157,7 @@ export function setAvatarPose(group: THREE.Object3D, pose: Avatar["pose"]) {
   fillAvatarBody(group, avatar);
   const tag = group.getObjectByName("name-tag");
   if (tag) tag.position.y = pose === "sit" ? 0.78 : 1.18;
+  ensureAvatarHit(group);
 }
 
 export function createAvatars(plate: FloorPlate, officesRoot?: THREE.Group) {

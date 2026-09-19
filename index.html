@@ -11,6 +11,7 @@
         <div class="title">Humans at Work</div>
         <button type="button" id="edit-toggle">Edit</button>
         <div id="zoom-readout">zoom —</div>
+        <div id="floor-readout" hidden>floor 1</div>
       </div>
       <div id="status">loading plate…</div>
       <div id="tool-hud"></div>
@@ -23,7 +24,22 @@
         <div id="mac-peek-meta"></div>
       </div>
     </div>
-    <div id="mac">
+    <div id="person-card" hidden>
+      <div class="mac-title">
+        <button type="button" class="mac-close" id="person-card-close" aria-label="Close"></button>
+        <span id="person-card-title">Person</span>
+      </div>
+      <div class="mac-body">
+        <div id="person-card-name"></div>
+        <div id="person-card-meta" hidden></div>
+        <p id="person-card-note" class="mac-hint" hidden></p>
+        <div id="person-card-actions" class="person-card-actions">
+          <button type="button" id="person-card-profile">View profile</button>
+          <button type="button" id="person-card-whisper">Whisper</button>
+        </div>
+      </div>
+    </div>
+    <div id="mac" class="collapsed">
       <div class="mac-title">
         <button type="button" class="mac-close" aria-label="Collapse"></button>
         <span>Workstation</span>
@@ -48,6 +64,7 @@
           <button type="button" data-mac="chat">
             <span class="mac-icon">✉</span>
             Chat
+            <span id="mac-chat-icon-badge" class="mac-badge" hidden></span>
           </button>
           <button type="button" data-mac="settings">
             <span class="mac-icon">⚙</span>
@@ -81,7 +98,7 @@
             <button type="button" id="mac-logout">Sign out</button>
           </div>
           <div id="mac-account-out">
-            <p class="mac-hint">Guests can walk the floor. Sign in to take an office and chat.</p>
+            <p class="mac-hint">You're on the clock as a guest. Sign in to take an office and earn XP.</p>
             <label class="mac-field">Email
               <input id="mac-email" type="email" autocomplete="username" spellcheck="false" />
             </label>
@@ -109,7 +126,7 @@
             <label><input type="radio" name="mac-privacy" value="busy" disabled /> Busy — door shut, no walk-in</label>
             <label><input type="radio" name="mac-privacy" value="focus" disabled /> Focus — dark glass, do not disturb</label>
           </div>
-          <p id="mac-privacy-hint">Claim an office to set this. Block someone from Floor if you don't want their chat, knocks, or walk-ins.</p>
+          <p id="mac-privacy-hint">Claim an office to set this. Busy and Focus ignore new whispers. Available for whispers is under Chat.</p>
           <button type="button" id="mac-boot" disabled>Boot everyone</button>
         </div>
         <div id="mac-alert" hidden>
@@ -125,21 +142,33 @@
           </div>
         </div>
         <div class="mac-panel" id="mac-chat" hidden>
-          <div class="mac-chat-tabs">
-            <button type="button" data-chat="floor" class="on">Floor</button>
-            <button type="button" data-chat="office">Office</button>
+          <div class="mac-chat-main">
+            <div id="mac-whisper-people" class="mac-whisper-people"></div>
+            <div class="mac-chat-stage">
+              <div id="mac-chat-log-floor" class="mac-well mac-chat-log"></div>
+              <div id="mac-chat-log-office" class="mac-well mac-chat-log" hidden></div>
+              <div id="mac-chat-log-whisper" class="mac-well mac-chat-log" hidden></div>
+              <div id="mac-chat-log-requests" class="mac-well mac-chat-log mac-request-list" hidden></div>
+              <p id="mac-chat-floor-hint" class="mac-hint" hidden>Quiet — the library is silent.</p>
+              <p id="mac-chat-office-hint" class="mac-hint" hidden>Walk into an office to talk in this room.</p>
+              <p id="mac-chat-whisper-hint" class="mac-hint" hidden>Click someone on the floor, or wait for a request.</p>
+              <form id="mac-chat-form">
+                <input id="mac-chat-input" maxlength="200" placeholder="Message the floor…" autocomplete="off" />
+                <button type="submit">Send</button>
+              </form>
+            </div>
           </div>
-          <div id="mac-chat-log-floor" class="mac-well mac-chat-log"></div>
-          <div id="mac-chat-log-office" class="mac-well mac-chat-log" hidden></div>
-          <p id="mac-chat-floor-hint" class="mac-hint" hidden>Claim an office to talk on the floor.</p>
-          <p id="mac-chat-office-hint" class="mac-hint" hidden>Walk into an office to talk in this room.</p>
-          <form id="mac-chat-form">
-            <input id="mac-chat-input" maxlength="200" placeholder="Message the floor…" autocomplete="off" />
-            <button type="submit">Send</button>
-          </form>
         </div>
         <div class="mac-panel" id="mac-settings" hidden>
-          <p class="mac-hint">Audio, notifications, and other preferences.</p>
+          <label class="mac-check" id="mac-chat-available-wrap">
+            <input type="checkbox" id="mac-chat-available" /> Available for whispers
+          </label>
+          <p class="mac-hint">Others can send you a whisper request while this is on. Busy and Focus still ignore new whispers.</p>
+          <label class="mac-check">
+            <input type="checkbox" id="mac-share-tz" /> Use my timezone
+          </label>
+          <p class="mac-hint" id="mac-tz-readout">Pacific Time · America/Los Angeles</p>
+          <p class="mac-hint">When on, this zone is on your office door for everyone.</p>
           <button type="button" id="mac-debug-knock">Debug: bot knock</button>
         </div>
       </div>
@@ -166,21 +195,61 @@
         </div>
       </div>
     </div>
+    <div id="join-gate">
+      <div id="join-gate-card">
+        <div class="mac-title"><span>Humans at Work</span></div>
+        <div class="mac-body">
+          <p id="join-hello">Clock in to walk the floor.</p>
+          <div class="mac-well" id="join-copy">
+            <p>A shared office you actually sit in — body doubling, not a blank Zoom grid.</p>
+            <p>Chat like AIM: floor chatter, private whispers, and a buddy list on the workstation.</p>
+            <p>You're on the clock the moment you continue, even if you never take a desk.</p>
+            <p>Claim an office to earn XP, put your name on the door, and sit down to work.</p>
+            <p>Clock out at the elevator when you're done.</p>
+          </div>
+          <div id="join-actions">
+            <button type="button" id="join-enter" hidden disabled>Clock in</button>
+            <button type="button" id="join-guest" disabled>Continue as guest</button>
+            <button type="button" id="join-signin" disabled>Sign in</button>
+          </div>
+          <div id="join-auth" hidden>
+            <label class="mac-field">Email
+              <input id="join-email" type="email" autocomplete="username" spellcheck="false" />
+            </label>
+            <button type="button" id="join-email-send">Email me a code</button>
+            <div id="join-email-code-wrap" hidden>
+              <label class="mac-field">Code
+                <input id="join-email-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" />
+              </label>
+              <button type="button" id="join-email-verify">Sign in</button>
+            </div>
+            <p id="join-auth-hint" class="mac-hint"></p>
+            <div id="join-google-wrap" hidden>
+              <p class="mac-or">or</p>
+              <div id="join-google"></div>
+            </div>
+            <button type="button" id="join-back">Back</button>
+          </div>
+        </div>
+      </div>
+    </div>
     <div id="claim-shift" hidden>
       <div id="claim-shift-card">
         <div class="mac-title">
           <button type="button" class="mac-close" id="claim-shift-close" aria-label="Close"></button>
-          <span>Start shift</span>
+          <span>Claim office</span>
         </div>
         <div class="mac-body">
           <p id="claim-shift-hello">This office is vacant.</p>
           <div class="mac-well">
             <div class="day-end-row"><span>Desk</span><b id="claim-shift-desk"></b></div>
-            <p class="mac-hint" id="claim-shift-copy">
-              Starting a shift checks you in, puts your name on the door, and sits you at the desk. Floor chat opens. Visitors can drop by while you are Open; set Busy or Focus from your workstation. Clock out at the elevator when you are done.
-            </p>
+            <div class="mac-hint" id="claim-shift-copy">
+              <p>You're already on the clock.</p>
+              <p>Claiming this office earns XP, puts your name on the door, and sits you at the desk.</p>
+              <p>Visitors can drop by while you are Open. Set Busy or Focus from your workstation.</p>
+            </div>
           </div>
-          <button type="button" id="claim-shift-go">Start shift</button>
+          <button type="button" id="claim-shift-go">Claim office</button>
           <button type="button" id="claim-shift-no">Not now</button>
         </div>
       </div>
@@ -194,7 +263,7 @@
         </div>
         <div class="mac-body">
           <p id="conf-reserve-hello">Conference room</p>
-          <label class="mac-field">Day (PT)
+          <label class="mac-field" id="conf-reserve-day-label">Day
             <input id="conf-reserve-day" type="date" />
           </label>
           <p class="mac-hint" id="conf-reserve-allow">60 min max per person per Pacific day</p>
@@ -229,6 +298,7 @@
           <p class="mac-hint" id="day-end-copy">
             Leave office frees your desk and you stay on the floor. End shift clocks you out and takes you outside — come back later without closing the tab.
           </p>
+          <div id="day-end-floors" class="day-end-floors" hidden></div>
           <button type="button" id="day-end-go">Leave office</button>
           <button type="button" id="day-end-home">End shift</button>
           <button type="button" id="day-end-stay">Stay</button>

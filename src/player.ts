@@ -143,12 +143,14 @@ export function attachPlayer(opts: {
         setAvatarPose(player, "stand");
         onPose?.({ ...walk.pose(), pose: "stand" });
       }
-      const goal = walk.setCanvasGoal(x, y);
-      if (!goal) {
-        if (!force) return false;
+      if (force) {
         walk.snap({ x, y, facing: walk.pose().facing, pose: "stand" });
         onPose?.(walk.pose());
         return true;
+      }
+      const goal = walk.setCanvasGoal(x, y);
+      if (!goal) {
+        return false;
       }
       const [wx, , wz] = toWorld(goal.x, goal.y, plate);
       onClickFx?.(wx, wz);

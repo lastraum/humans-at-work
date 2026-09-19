@@ -19,6 +19,7 @@ import {
   type ServerMsg,
   clampPrivacy,
 } from "../src/protocol";
+import { FIRST_FLOOR, groupClaimsByFloor, selectableFloors, sameFloors } from "../src/floors";
 import { officeAdForPeer, setUserBlock, userBlocks, userIdForToken, whoBlocked } from "./auth";
 import {
   knownConferenceIds,
@@ -32,15 +33,31 @@ type Slot = {
   peer: Peer;
   signedIn: boolean;
   blocked: Set<string>;
+  chatAvailable: boolean;
+};
+
+type WhisperPair = {
+  a: string;
+  b: string;
+  open: boolean;
+  pendingFrom?: string;
+  pendingName?: string;
+  pendingText?: string;
 };
 
 const rooms = new Map<string, Map<string, Slot>>();
 const claimsByRoom = new Map<string, Map<string, Claim>>();
+const whispersByRoom = new Map<string, Map<string, WhisperPair>>();
 const REPLACED = 4001;
 
 type DeskFootprint = { id: string; col: number; row: number; cols: number; rows: number };
 
-function loadDeskFootprints(): { cell: number; desks: DeskFootprint[] } {
+function loadDeskFootprints(): {
+  cell: number;
+  desks: DeskFootprint[];
+  officeIds: string[];
+  fixtureIds: string[];
+} {
   try {
     const raw = JSON.parse(
       readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../data/floor-plate.json"), "utf8"),
@@ -48,22 +65,28 @@ function loadDeskFootprints(): { cell: number; desks: DeskFootprint[] } {
       grid?: { cellSize?: number };
       offices?: DeskFootprint[];
       cubicles?: DeskFootprint[];
+      avatars?: { officeId?: string }[];
     };
     const cell = Number(raw.grid?.cellSize) || 179;
-    const desks = [...(raw.offices ?? []), ...(raw.cubicles ?? [])].map((desk) => ({
+    const offices = raw.offices ?? [];
+    const desks = [...offices, ...(raw.cubicles ?? [])].map((desk) => ({
       id: String(desk.id),
       col: Number(desk.col) || 0,
       row: Number(desk.row) || 0,
       cols: Number(desk.cols) || 1,
       rows: Number(desk.rows) || 1,
     }));
-    return { cell, desks };
+    const officeIds = offices.map((desk) => String(desk.id)).filter(Boolean);
+    const fixtureIds = (raw.avatars ?? [])
+      .map((avatar) => String(avatar.officeId ?? ""))
+      .filter((id) => id && officeIds.includes(id));
+    return { cell, desks, officeIds, fixtureIds };
   } catch {
-    return { cell: 179, desks: [] };
+    return { cell: 179, desks: [], officeIds: [], fixtureIds: [] };
   }
 }
 
-const { cell: CELL, desks: DESKS } = loadDeskFootprints();
+const { cell: CELL, desks: DESKS, officeIds: OFFICE_IDS, fixtureIds: FIXTURE_IDS } = loadDeskFootprints();
 
 function loadQuietCells(): Set<string> {
   const cells = new Set<string>();
@@ -127,9 +150,19 @@ function peerDesk(peer: Peer) {
   return deskAt(col, row);
 }
 
-function sendToDesk(room: Map<string, Slot>, deskId: string, msg: ServerMsg) {
+function peerFloor(peer: Peer) {
+  const n = Math.trunc(Number(peer.floor) || FIRST_FLOOR);
+  return n >= FIRST_FLOOR ? n : FIRST_FLOOR;
+}
+
+function claimKey(floor: number, deskId: string) {
+  return `${floor}:${deskId}`;
+}
+
+function sendToDesk(room: Map<string, Slot>, deskId: string, floor: number, msg: ServerMsg) {
   const raw = JSON.stringify(msg);
   for (const slot of room.values()) {
+    if (peerFloor(slot.peer) !== floor) continue;
     if (peerDesk(slot.peer) !== deskId) continue;
     if (slot.ws.readyState === WebSocket.OPEN) slot.ws.send(raw);
   }
@@ -147,6 +180,37 @@ function broadcast(room: Map<string, Slot>, skip: string | null, msg: ServerMsg)
   }
 }
 
+function broadcastFloor(room: Map<string, Slot>, floor: number, skip: string | null, msg: ServerMsg) {
+  const raw = JSON.stringify(msg);
+  for (const [id, slot] of room) {
+    if (skip && id === skip) continue;
+    if (peerFloor(slot.peer) !== floor) continue;
+    if (slot.ws.readyState === WebSocket.OPEN) slot.ws.send(raw);
+  }
+}
+
+function claimFloor(claim: Claim) {
+  const n = Math.trunc(Number(claim.floor) || FIRST_FLOOR);
+  return n >= FIRST_FLOOR ? n : FIRST_FLOOR;
+}
+
+function claimsOnFloor(claims: Map<string, Claim>, floor: number) {
+  return [...claims.values()].filter((claim) => claimFloor(claim) === floor);
+}
+
+function catalogOf(claims: Map<string, Claim>) {
+  const floors = selectableFloors(groupClaimsByFloor(claims.values()), OFFICE_IDS, FIXTURE_IDS);
+  return { floors, maxFloor: floors[floors.length - 1] ?? FIRST_FLOOR };
+}
+
+function viewOf(room: Map<string, Slot>, claims: Map<string, Claim>, floor: number, selfId: string) {
+  const peers = [...room.values()]
+    .filter((slot) => slot.peer.id !== selfId && peerFloor(slot.peer) === floor)
+    .map((slot) => slot.peer);
+  const list = claimsOnFloor(claims, floor);
+  return { peers, claims: list, officeAds: adsOf(list) };
+}
+
 function claimsOf(roomId: string) {
   let map = claimsByRoom.get(roomId);
   if (!map) {
@@ -154,6 +218,51 @@ function claimsOf(roomId: string) {
     claimsByRoom.set(roomId, map);
   }
   return map;
+}
+
+function whispersOf(roomId: string) {
+  let map = whispersByRoom.get(roomId);
+  if (!map) {
+    map = new Map();
+    whispersByRoom.set(roomId, map);
+  }
+  return map;
+}
+
+function pairKey(a: string, b: string) {
+  return a < b ? `${a}\n${b}` : `${b}\n${a}`;
+}
+
+function otherOf(pair: WhisperPair, id: string) {
+  return pair.a === id ? pair.b : pair.a;
+}
+
+function claimOfPeer(roomId: string, peerId: string) {
+  for (const claim of claimsOf(roomId).values()) {
+    if (claim.peerId === peerId) return claim;
+  }
+  return undefined;
+}
+
+function canReceiveWhisper(slot: Slot, roomId: string, fromId: string) {
+  if (!slot.chatAvailable) return false;
+  if (slot.blocked.has(fromId)) return false;
+  const claim = claimOfPeer(roomId, slot.peer.id);
+  if (claim && (claim.privacy === "busy" || claim.privacy === "focus")) return false;
+  return true;
+}
+
+function endWhispersFor(room: Map<string, Slot>, roomId: string, peerId: string, reason: "left" | "ended") {
+  const pairs = whispersOf(roomId);
+  for (const [key, pair] of [...pairs]) {
+    if (pair.a !== peerId && pair.b !== peerId) continue;
+    const other = otherOf(pair, peerId);
+    pairs.delete(key);
+    const dest = room.get(other);
+    if (dest) send(dest.ws, { type: "whisper-end", peerId, reason });
+    const self = room.get(peerId);
+    if (self) send(self.ws, { type: "whisper-end", peerId: other, reason });
+  }
 }
 
 function kindOfDesk(id: string): DeskKind {
@@ -184,10 +293,17 @@ function adsOf(claims: Iterable<Claim>): OfficeAd[] {
 
 function releasePeer(roomId: string, room: Map<string, Slot>, peerId: string) {
   const claims = claimsOf(roomId);
-  for (const [deskId, claim] of claims) {
+  for (const [key, claim] of claims) {
     if (claim.peerId !== peerId) continue;
-    claims.delete(deskId);
-    broadcast(room, null, { type: "release", deskId, peerId });
+    claims.delete(key);
+    broadcastFloor(room, claimFloor(claim), null, { type: "release", deskId: claim.deskId, peerId });
+  }
+}
+
+function publishFloors(room: Map<string, Slot>, claims: Map<string, Claim>) {
+  const { floors, maxFloor } = catalogOf(claims);
+  for (const slot of room.values()) {
+    send(slot.ws, { type: "floors", floor: peerFloor(slot.peer), maxFloor, floors });
   }
 }
 
@@ -272,16 +388,20 @@ function attachRoom(httpServer: Server) {
         }
         const eth = String(msg.address ?? "").toLowerCase();
         const address = /^0x[a-f0-9]{40}$/.test(eth) ? eth : undefined;
-        const peer: Peer = { id, name, color, address, ...poseOf(msg) };
         const claims = claimsOf(roomId);
         if (selfId && selfId !== id) {
           const old = room!.get(selfId);
           if (old && old.ws === ws) {
+            const oldFloor = peerFloor(old.peer);
             room!.delete(selfId);
-            for (const [deskId, claim] of [...claims]) {
+            for (const [key, claim] of [...claims]) {
               if (claim.peerId === id) {
-                claims.delete(deskId);
-                broadcast(room!, null, { type: "release", deskId, peerId: id });
+                claims.delete(key);
+                broadcastFloor(room!, claimFloor(claim), null, {
+                  type: "release",
+                  deskId: claim.deskId,
+                  peerId: id,
+                });
               }
             }
             for (const claim of claims.values()) {
@@ -289,9 +409,9 @@ function attachRoom(httpServer: Server) {
               claim.peerId = id;
               claim.name = name;
               syncClaimAd(claim);
-              broadcast(room!, null, { type: "claim", claim });
+              broadcastFloor(room!, claimFloor(claim), null, { type: "claim", claim });
             }
-            broadcast(room!, null, { type: "leave", id: selfId });
+            broadcastFloor(room!, oldFloor, null, { type: "leave", id: selfId });
           }
         }
         const token = String(msg.token ?? "").trim();
@@ -299,16 +419,23 @@ function attachRoom(httpServer: Server) {
         const signedIn = Boolean(authedId && authedId === id);
         const existing = room!.get(id);
         const previous = existing && existing.ws !== ws ? existing.ws : null;
+        const ownClaim = [...claims.values()].find((claim) => claim.peerId === id);
+        const { floors: openFloors, maxFloor } = catalogOf(claims);
+        const wanted = existing?.peer.floor ?? ownClaim?.floor ?? FIRST_FLOOR;
+        const stay =
+          openFloors.includes(wanted) ||
+          (ownClaim && claimFloor(ownClaim) === wanted) ||
+          Boolean(existing && peerFloor(existing.peer) === wanted);
+        const floor = stay ? wanted : FIRST_FLOOR;
+        const chatAvailable = Boolean(existing && existing.ws === ws && existing.chatAvailable);
+        const peer: Peer = { id, name, color, address, floor, chatAvailable, ...poseOf(msg) };
         selfId = id;
         const blocked = new Set([
           ...(signedIn ? userBlocks(id) : []),
           ...(existing && existing.ws === ws ? existing.blocked : []),
         ]);
-        room!.set(id, { ws, peer, signedIn, blocked });
+        room!.set(id, { ws, peer, signedIn, blocked, chatAvailable });
         if (previous) previous.close(REPLACED, "replaced");
-        const others = [...room!.values()]
-          .filter((slot) => slot.peer.id !== id)
-          .map((slot) => slot.peer);
         const blockedBy = new Set(signedIn ? whoBlocked(id) : []);
         for (const other of room!.values()) {
           if (other.blocked.has(id)) blockedBy.add(other.peer.id);
@@ -316,20 +443,26 @@ function attachRoom(httpServer: Server) {
         for (const claim of claims.values()) {
           if (claim.peerId === id) syncClaimAd(claim);
         }
-        const claimList = [...claims.values()];
+        const view = viewOf(room!, claims, floor, id);
         send(ws, {
           type: "welcome",
           roomId,
           self: peer,
-          peers: others,
-          claims: claimList,
+          peers: view.peers,
+          claims: view.claims,
           reservations: listReservations(),
           blocked: [...blocked],
           blockedBy: [...blockedBy],
-          officeAds: adsOf(claimList),
+          officeAds: view.officeAds,
+          floor,
+          maxFloor,
+          floors: openFloors,
         });
-        if (existing && existing.ws === ws) broadcast(room!, id, { type: "state", id, ...peer });
-        else broadcast(room!, id, { type: "join", peer });
+        if (existing && existing.ws === ws) {
+          broadcastFloor(room!, floor, id, { type: "state", id, ...peer });
+        } else {
+          broadcastFloor(room!, floor, id, { type: "join", peer });
+        }
         return;
       }
       const slot = selfId ? room!.get(selfId) : undefined;
@@ -348,6 +481,14 @@ function attachRoom(httpServer: Server) {
         if (slot.signedIn) setUserBlock(selfId, target, on);
         const other = room!.get(target);
         if (other) send(other.ws, { type: on ? "blocked" : "unblocked", byId: selfId });
+        if (on) {
+          const pairs = whispersOf(roomId);
+          const key = pairKey(selfId, target);
+          if (pairs.delete(key)) {
+            send(ws, { type: "whisper-end", peerId: target, reason: "ended" });
+            if (other) send(other.ws, { type: "whisper-end", peerId: selfId, reason: "ended" });
+          }
+        }
         return;
       }
       if (msg.type === "boot") {
@@ -355,8 +496,9 @@ function attachRoom(httpServer: Server) {
         const mine = [...claimsOf(roomId).values()].find((claim) => claim.peerId === selfId);
         if (!mine) return;
         mine.privacy = "busy";
-        broadcast(room!, null, { type: "claim", claim: mine });
-        broadcast(room!, null, { type: "boot", deskId: mine.deskId, peerId: selfId });
+        const floor = claimFloor(mine);
+        broadcastFloor(room!, floor, null, { type: "claim", claim: mine });
+        broadcastFloor(room!, floor, null, { type: "boot", deskId: mine.deskId, peerId: selfId });
         return;
       }
       if (msg.type === "move") {
@@ -369,16 +511,18 @@ function attachRoom(httpServer: Server) {
         slot.peer.facing = facing;
         slot.peer.col = Math.floor(x / CELL);
         slot.peer.row = Math.floor(y / CELL);
-        broadcast(room!, selfId, { type: "move", id: selfId, x, y, facing });
+        broadcastFloor(room!, peerFloor(slot.peer), selfId, { type: "move", id: selfId, x, y, facing });
         return;
       }
       if (msg.type === "state") {
+        const floor = peerFloor(slot.peer);
         Object.assign(slot.peer, poseOf(msg), {
           id: slot.peer.id,
           name: slot.peer.name,
           color: slot.peer.color,
+          floor,
         });
-        broadcast(room!, selfId, { type: "state", id: selfId, ...poseOf(slot.peer) });
+        broadcastFloor(room!, floor, selfId, { type: "state", id: selfId, ...poseOf(slot.peer) });
         return;
       }
       if (msg.type === "profile") {
@@ -390,8 +534,36 @@ function attachRoom(httpServer: Server) {
         for (const claim of claims.values()) {
           if (claim.peerId !== selfId) continue;
           claim.name = name;
-          broadcast(room!, null, { type: "claim", claim });
+          broadcastFloor(room!, claimFloor(claim), null, { type: "claim", claim });
         }
+        return;
+      }
+      if (msg.type === "floor") {
+        const claims = claimsOf(roomId);
+        const { floors: openFloors, maxFloor } = catalogOf(claims);
+        const target = Math.trunc(num(msg.floor, FIRST_FLOOR));
+        const from = peerFloor(slot.peer);
+        if (target === from) {
+          send(ws, { type: "floors", floor: from, maxFloor, floors: openFloors });
+          return;
+        }
+        if (!openFloors.includes(target)) {
+          send(ws, { type: "error", message: "no floor" });
+          return;
+        }
+        broadcastFloor(room!, from, selfId, { type: "leave", id: selfId });
+        slot.peer.floor = target;
+        const view = viewOf(room!, claims, target, selfId);
+        send(ws, {
+          type: "floor",
+          floor: target,
+          maxFloor,
+          floors: openFloors,
+          peers: view.peers,
+          claims: view.claims,
+          officeAds: view.officeAds,
+        });
+        broadcastFloor(room!, target, selfId, { type: "join", peer: slot.peer });
         return;
       }
       if (msg.type === "claim") {
@@ -401,13 +573,17 @@ function attachRoom(httpServer: Server) {
           send(ws, { type: "error", message: "bad desk" });
           return;
         }
+        const floor = peerFloor(slot.peer);
         const claims = claimsOf(roomId);
-        const taken = claims.get(deskId);
+        const key = claimKey(floor, deskId);
+        const taken = claims.get(key);
         if (taken && taken.peerId !== selfId) {
           send(ws, { type: "error", message: "taken", deskId });
           return;
         }
+        const before = catalogOf(claims).floors;
         releasePeer(roomId, room!, selfId);
+        const tz = String(msg.timezone ?? "").trim().slice(0, 64);
         const claim: Claim = {
           deskId,
           kind: kindOfDesk(deskId),
@@ -415,17 +591,28 @@ function attachRoom(httpServer: Server) {
           name: slot.peer.name,
           privacy: "open",
           since: Date.now(),
+          floor,
+          timezone: tz || undefined,
         };
         syncClaimAd(claim);
-        claims.set(deskId, claim);
-        broadcast(room!, null, { type: "claim", claim });
+        claims.set(key, claim);
+        broadcastFloor(room!, floor, null, { type: "claim", claim });
         if (claim.officeAd) {
-          broadcast(room!, null, { type: "office-ad", ad: claim.officeAd, deskId, peerId: selfId });
+          broadcastFloor(room!, floor, null, {
+            type: "office-ad",
+            ad: claim.officeAd,
+            deskId,
+            peerId: selfId,
+          });
         }
+        if (!sameFloors(catalogOf(claims).floors, before)) publishFloors(room!, claims);
         return;
       }
       if (msg.type === "release") {
+        const claims = claimsOf(roomId);
+        const before = catalogOf(claims).floors;
         releasePeer(roomId, room!, selfId);
+        if (!sameFloors(catalogOf(claims).floors, before)) publishFloors(room!, claims);
         return;
       }
       if (msg.type === "office-ad") {
@@ -437,13 +624,24 @@ function attachRoom(httpServer: Server) {
           return;
         }
         syncClaimAd(mine);
-        broadcast(room!, null, { type: "claim", claim: mine });
-        broadcast(room!, null, {
+        const floor = claimFloor(mine);
+        broadcastFloor(room!, floor, null, { type: "claim", claim: mine });
+        broadcastFloor(room!, floor, null, {
           type: "office-ad",
           ad: mine.officeAd ?? null,
           deskId: mine.deskId,
           peerId: selfId,
         });
+        return;
+      }
+      if (msg.type === "timezone") {
+        const tz = msg.tz == null ? "" : String(msg.tz).trim().slice(0, 64);
+        for (const claim of claimsOf(roomId).values()) {
+          if (claim.peerId !== selfId) continue;
+          if (tz) claim.timezone = tz;
+          else delete claim.timezone;
+          broadcastFloor(room!, claimFloor(claim), null, { type: "claim", claim });
+        }
         return;
       }
       if (msg.type === "privacy") {
@@ -452,12 +650,129 @@ function attachRoom(httpServer: Server) {
         for (const claim of claimsOf(roomId).values()) {
           if (claim.peerId !== selfId) continue;
           claim.privacy = privacy;
-          broadcast(room!, null, { type: "claim", claim });
+          broadcastFloor(room!, claimFloor(claim), null, { type: "claim", claim });
         }
         return;
       }
+      if (msg.type === "chat-available") {
+        const on = Boolean(msg.on);
+        slot.chatAvailable = on;
+        slot.peer.chatAvailable = on;
+        broadcast(room!, null, { type: "chat-available", id: selfId, on });
+        return;
+      }
+      if (msg.type === "whisper") {
+        if (inQuietZone(slot.peer)) {
+          send(ws, { type: "error", message: "quiet — library" });
+          return;
+        }
+        const toId = clampId(msg.toId);
+        const text = String(msg.text ?? "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 200);
+        if (!toId || toId === selfId) return;
+        const dest = room!.get(toId);
+        if (!dest || dest.blocked.has(selfId)) {
+          send(ws, { type: "error", message: "not available for whispers" });
+          return;
+        }
+        const pairs = whispersOf(roomId);
+        const key = pairKey(selfId, toId);
+        const existingPair = pairs.get(key);
+        if (existingPair?.open) {
+          if (!text) return;
+          const payload = {
+            type: "whisper" as const,
+            id: selfId,
+            name: slot.peer.name,
+            text,
+            peerId: toId,
+          };
+          send(ws, { ...payload, peerId: toId });
+          send(dest.ws, { ...payload, peerId: selfId });
+          return;
+        }
+        if (!canReceiveWhisper(dest, roomId, selfId)) {
+          send(ws, { type: "error", message: "not available for whispers" });
+          return;
+        }
+        if (existingPair?.pendingFrom === toId) {
+          const theirs = existingPair.pendingText ?? "";
+          existingPair.open = true;
+          existingPair.pendingFrom = undefined;
+          existingPair.pendingName = undefined;
+          existingPair.pendingText = undefined;
+          send(ws, { type: "whisper-open", peerId: toId, name: dest.peer.name });
+          send(dest.ws, { type: "whisper-open", peerId: selfId, name: slot.peer.name });
+          if (theirs) {
+            send(ws, { type: "whisper", id: toId, name: dest.peer.name, text: theirs, peerId: toId });
+            send(dest.ws, { type: "whisper", id: toId, name: dest.peer.name, text: theirs, peerId: selfId });
+          }
+          send(ws, { type: "whisper", id: selfId, name: slot.peer.name, text, peerId: toId });
+          send(dest.ws, { type: "whisper", id: selfId, name: slot.peer.name, text, peerId: selfId });
+          return;
+        }
+        if (existingPair?.pendingFrom === selfId) {
+          existingPair.pendingText = text;
+          existingPair.pendingName = slot.peer.name;
+          send(dest.ws, { type: "whisper-request", fromId: selfId, fromName: slot.peer.name, text });
+          return;
+        }
+        pairs.set(key, {
+          a: selfId < toId ? selfId : toId,
+          b: selfId < toId ? toId : selfId,
+          open: false,
+          pendingFrom: selfId,
+          pendingName: slot.peer.name,
+          pendingText: text,
+        });
+        send(dest.ws, { type: "whisper-request", fromId: selfId, fromName: slot.peer.name, text });
+        return;
+      }
+      if (msg.type === "whisper-reply") {
+        const fromId = clampId(msg.fromId);
+        if (!fromId) return;
+        const pairs = whispersOf(roomId);
+        const key = pairKey(selfId, fromId);
+        const pair = pairs.get(key);
+        if (!pair || pair.open || pair.pendingFrom !== fromId) return;
+        const other = room!.get(fromId);
+        if (!msg.accept) {
+          pairs.delete(key);
+          send(ws, { type: "whisper-end", peerId: fromId, reason: "declined" });
+          if (other) send(other.ws, { type: "whisper-end", peerId: selfId, reason: "declined" });
+          return;
+        }
+        const first = pair.pendingText ?? "";
+        const fromName = pair.pendingName || other?.peer.name || fromId.slice(0, 8);
+        pair.open = true;
+        pair.pendingFrom = undefined;
+        pair.pendingName = undefined;
+        pair.pendingText = undefined;
+        send(ws, { type: "whisper-open", peerId: fromId, name: fromName });
+        if (other) send(other.ws, { type: "whisper-open", peerId: selfId, name: slot.peer.name });
+        if (first) {
+          send(ws, { type: "whisper", id: fromId, name: fromName, text: first, peerId: fromId });
+          if (other) send(other.ws, { type: "whisper", id: fromId, name: fromName, text: first, peerId: selfId });
+        }
+        return;
+      }
+      if (msg.type === "whisper-end") {
+        const target = clampId(msg.peerId ?? "");
+        if (!target) {
+          endWhispersFor(room!, roomId, selfId, "ended");
+          return;
+        }
+        const pairs = whispersOf(roomId);
+        const key = pairKey(selfId, target);
+        pairs.delete(key);
+        send(ws, { type: "whisper-end", peerId: target, reason: "ended" });
+        const other = room!.get(target);
+        if (other) send(other.ws, { type: "whisper-end", peerId: selfId, reason: "ended" });
+        return;
+      }
       if (msg.type === "chat") {
-        if (needAccount()) return;
         if (inQuietZone(slot.peer)) {
           send(ws, { type: "error", message: "quiet — library" });
           return;
@@ -467,11 +782,12 @@ function attachRoom(httpServer: Server) {
           .trim()
           .slice(0, 200);
         if (!text) return;
+        const floor = peerFloor(slot.peer);
         const channel: ChatChannel = msg.channel === "office" ? "office" : "floor";
         if (channel === "office") {
           const deskId = peerDesk(slot.peer);
           if (!deskId) return;
-          sendToDesk(room!, deskId, {
+          sendToDesk(room!, deskId, floor, {
             type: "chat",
             id: selfId,
             name: slot.peer.name,
@@ -490,6 +806,7 @@ function attachRoom(httpServer: Server) {
         };
         const raw = JSON.stringify(payload);
         for (const dest of room!.values()) {
+          if (peerFloor(dest.peer) !== floor) continue;
           if (inQuietZone(dest.peer)) continue;
           if (dest.ws.readyState === WebSocket.OPEN) dest.ws.send(raw);
         }
@@ -498,11 +815,12 @@ function attachRoom(httpServer: Server) {
       if (msg.type === "knock") {
         if (needAccount()) return;
         const deskId = clampId(msg.deskId);
-        const claim = deskId ? claimsOf(roomId).get(deskId) : undefined;
+        const floor = peerFloor(slot.peer);
+        const claim = deskId ? claimsOf(roomId).get(claimKey(floor, deskId)) : undefined;
         if (!claim || claim.peerId === selfId) return;
         if (claim.privacy === "open" || claim.privacy === "focus") return;
         const occ = room!.get(claim.peerId);
-        if (!occ || occ.blocked.has(selfId)) return;
+        if (!occ || occ.blocked.has(selfId) || peerFloor(occ.peer) !== floor) return;
         send(occ.ws, {
           type: "knock",
           deskId: claim.deskId,
@@ -553,7 +871,7 @@ function attachRoom(httpServer: Server) {
         const accept = Boolean(msg.accept);
         if (accept) {
           mine.privacy = "open";
-          broadcast(room!, null, { type: "claim", claim: mine });
+          broadcastFloor(room!, claimFloor(mine), null, { type: "claim", claim: mine });
         }
         const reply = {
           type: "knock-reply" as const,
@@ -570,13 +888,20 @@ function attachRoom(httpServer: Server) {
     ws.on("close", () => {
       const slot = selfId ? room!.get(selfId) : undefined;
       if (!slot || slot.ws !== ws) return;
+      const floor = peerFloor(slot.peer);
+      endWhispersFor(room!, roomId, selfId, "left");
       room!.delete(selfId);
+      const claims = claimsOf(roomId);
+      const before = catalogOf(claims).floors;
       releasePeer(roomId, room!, selfId);
-      broadcast(room!, selfId, { type: "leave", id: selfId });
+      broadcastFloor(room!, floor, selfId, { type: "leave", id: selfId });
       if (room!.size === 0) {
         rooms.delete(roomId);
         claimsByRoom.delete(roomId);
+        whispersByRoom.delete(roomId);
+        return;
       }
+      if (!sameFloors(catalogOf(claims).floors, before)) publishFloors(room!, claims);
     });
   });
 

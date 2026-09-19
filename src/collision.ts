@@ -20,6 +20,17 @@ export function collectColliders(roots: THREE.Object3D | THREE.Object3D[]): Coll
   const out: Collider[] = [];
   for (const root of list) {
     root.traverse((node) => {
+      if (node.userData?.blocksNav) {
+        _box.setFromObject(node);
+        if (_box.isEmpty()) return;
+        out.push({
+          minX: _box.min.x,
+          maxX: _box.max.x,
+          minZ: _box.min.z,
+          maxZ: _box.max.z,
+        });
+        return;
+      }
       const item = node.userData?.item as FurnitureItem | undefined;
       if (!item) return;
       if (node.parent?.userData?.item) return;
@@ -78,6 +89,11 @@ export function canStandAt(
   return true;
 }
 
+function kindStepBlocked(from: CellKind | null, to: CellKind | null) {
+  if (!from || !to || from === to) return false;
+  return (from === "elevator" && to === "kitchen") || (from === "kitchen" && to === "elevator");
+}
+
 type Node = { x: number; y: number };
 
 export function astarWorld(
@@ -128,6 +144,17 @@ export function astarWorld(
       const next = { x: cur.x + dx, y: cur.y + dy };
       const [wx, , wz] = toWorld(next.x, next.y, plate);
       if (!canStandAt(wx, wz, plate, inside, colliders)) continue;
+      const fromKind = kindAt(
+        plate,
+        Math.floor(cur.x / plate.grid.cellSize),
+        Math.floor(cur.y / plate.grid.cellSize),
+      );
+      const toKind = kindAt(
+        plate,
+        Math.floor(next.x / plate.grid.cellSize),
+        Math.floor(next.y / plate.grid.cellSize),
+      );
+      if (kindStepBlocked(fromKind, toKind)) continue;
       const nk = key(next);
       const tentative = (gScore.get(ck) ?? 1e9) + 1;
       if (tentative >= (gScore.get(nk) ?? 1e9)) continue;

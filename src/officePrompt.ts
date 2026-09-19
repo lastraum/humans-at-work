@@ -136,7 +136,8 @@ function drawBubble(ctx: CanvasRenderingContext2D, title: string, subtitle: stri
 }
 
 export type Seat = { x: number; y: number; facing: number };
-export type PromptKind = "claim" | "leave" | "sit" | "knock" | null;
+export type PromptKind = "claim" | "leave" | "sit" | "knock" | "whisper" | null;
+export type PromptPeer = { id: string; name: string };
 
 export function attachOfficePrompt(scene: THREE.Scene) {
   const root = new THREE.Group();
@@ -157,6 +158,7 @@ export function attachOfficePrompt(scene: THREE.Scene) {
   let desk: Desk | null = null;
   let kind: PromptKind = null;
   let seat: Seat | null = null;
+  let peer: PromptPeer | null = null;
   const raycaster = new THREE.Raycaster();
 
   const paintCopy = (title: string, subtitle: string) => {
@@ -179,9 +181,13 @@ export function attachOfficePrompt(scene: THREE.Scene) {
     get seat() {
       return seat;
     },
+    get peer() {
+      return peer;
+    },
     show(next: Desk) {
       desk = next;
       seat = null;
+      peer = null;
       kind = "claim";
       paintCopy("Claim this office?", "Move in and sit down");
       root.position.copy(next.group.position);
@@ -191,6 +197,7 @@ export function attachOfficePrompt(scene: THREE.Scene) {
     showKnock(next: Desk, x: number, z: number) {
       desk = next;
       seat = null;
+      peer = null;
       kind = "knock";
       paintCopy("Knock?", "See if they're free");
       root.position.set(x, 2.05, z);
@@ -199,6 +206,7 @@ export function attachOfficePrompt(scene: THREE.Scene) {
     showSit(next: Desk | null, nextSeat: Seat, x: number, z: number, furn = "couch") {
       desk = next;
       seat = nextSeat;
+      peer = null;
       kind = "sit";
       const on =
         furn === "beanbag"
@@ -213,14 +221,25 @@ export function attachOfficePrompt(scene: THREE.Scene) {
     showLeave(x: number, z: number) {
       desk = null;
       seat = null;
+      peer = null;
       kind = "leave";
       paintCopy("Done for the day?", "Clock out and free your office");
+      root.position.set(x, 2.2, z);
+      root.visible = true;
+    },
+    showWhisper(next: PromptPeer, x: number, z: number) {
+      desk = null;
+      seat = null;
+      peer = next;
+      kind = "whisper";
+      paintCopy("Whisper?", next.name);
       root.position.set(x, 2.2, z);
       root.visible = true;
     },
     hide() {
       desk = null;
       seat = null;
+      peer = null;
       kind = null;
       root.visible = false;
     },

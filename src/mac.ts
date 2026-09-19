@@ -1,4 +1,16 @@
 import type { ChatChannel, Privacy } from "./protocol";
+import { timezoneLabel } from "./conferenceReserve";
+
+type ChatTab = ChatChannel | "whisper" | "requests";
+
+type WhisperThread = { peerId: string; name: string; pending?: boolean; open?: boolean; last?: string };
+
+type InboxItem = {
+  kind: "whisper" | "knock";
+  fromId: string;
+  fromName: string;
+  text: string;
+};
 
 export type MacAuth = {
   email?: string;
@@ -29,6 +41,12 @@ export function attachMac(opts: {
   hasDesk: () => boolean;
   signedIn?: () => boolean;
   onChat: (text: string, channel: ChatChannel) => void;
+  onWhisper?: (text: string, toId: string) => void;
+  onWhisperReply?: (fromId: string, accept: boolean) => void;
+  onWhisperEnd?: (peerId: string) => void;
+  onInspectPerson?: (peerId: string, name: string) => void;
+  onChatAvailable?: (on: boolean) => void;
+  onShareTz?: (on: boolean) => void;
   onKnockReply?: (fromId: string, accept: boolean) => void;
   onBlock?: (id: string, on: boolean) => void;
   onDebugKnock?: () => void;
@@ -43,16 +61,28 @@ export function attachMac(opts: {
   const nameInput = root.querySelector<HTMLInputElement>("#mac-name")!;
   const chatLogFloor = root.querySelector<HTMLElement>("#mac-chat-log-floor")!;
   const chatLogOffice = root.querySelector<HTMLElement>("#mac-chat-log-office")!;
+  const chatLogWhisper = root.querySelector<HTMLElement>("#mac-chat-log-whisper")!;
+  const chatLogRequests = root.querySelector<HTMLElement>("#mac-chat-log-requests")!;
   const chatHint = root.querySelector<HTMLElement>("#mac-chat-office-hint");
   const floorHint = root.querySelector<HTMLElement>("#mac-chat-floor-hint");
-  const chatTabs = root.querySelectorAll<HTMLButtonElement>("[data-chat]");
+  const whisperHint = root.querySelector<HTMLElement>("#mac-chat-whisper-hint");
   const chatForm = root.querySelector<HTMLFormElement>("#mac-chat-form")!;
   const chatInput = root.querySelector<HTMLInputElement>("#mac-chat-input")!;
-  let chatChannel: ChatChannel = "office";
+  const availableBox = root.querySelector<HTMLInputElement>("#mac-chat-available");
+  const shareTzBox = root.querySelector<HTMLInputElement>("#mac-share-tz");
+  const tzReadout = root.querySelector<HTMLElement>("#mac-tz-readout");
+  const whisperPeople = root.querySelector<HTMLElement>("#mac-whisper-people");
+  const chatIconBadge = root.querySelector<HTMLElement>("#mac-chat-icon-badge");
+  const chatIconBtn = root.querySelector<HTMLButtonElement>('[data-mac="chat"]');
+  let chatTab: ChatTab = "floor";
   let chatOffice: string | null = null;
   let claimed = false;
   let quiet = false;
+  let whisperPeer: string | null = null;
   const officeLogs = new Map<string, HTMLElement[]>();
+  const whisperLogs = new Map<string, HTMLElement[]>();
+  const whisperThreads: WhisperThread[] = [];
+  const inbox: InboxItem[] = [];
   const privacyHint = root.querySelector("#mac-privacy-hint")!;
   const privacyBtns = root.querySelectorAll<HTMLInputElement>("input[name='mac-privacy']");
   const alertEl = root.querySelector<HTMLElement>("#mac-alert")!;
@@ -61,6 +91,13 @@ export function attachMac(opts: {
   const bootBtn = root.querySelector<HTMLButtonElement>("#mac-boot");
   let knockFrom = "";
 
+  const syncSplit = () => {
+    const chatting =
+      !root.querySelector<HTMLElement>("#mac-chat")?.hidden && !root.classList.contains("collapsed");
+    root.classList.toggle("chat-split", chatting);
+    root.parentElement?.classList.toggle("chat-split", chatting);
+  };
+
   const showPanel = (id: string) => {
     panels.forEach((panel) => {
       panel.hidden = panel.id !== id;
@@ -68,15 +105,18 @@ export function attachMac(opts: {
     icons.forEach((icon) => {
       icon.classList.toggle("on", icon.dataset.mac === id.replace("mac-", ""));
     });
+    syncSplit();
+    if (id === "mac-chat") paintChat();
   };
 
   closeBtn.addEventListener("click", () => {
     root.classList.toggle("collapsed");
+    syncSplit();
   });
   icons.forEach((icon) => {
     icon.addEventListener("click", () => {
-      if ((icon.dataset.mac === "chat" || icon.dataset.mac === "privacy") && !opts.signedIn?.()) {
-        askSignIn(icon.dataset.mac === "chat" ? "Sign in to chat." : "Sign in to take an office.");
+      if (icon.dataset.mac === "privacy" && !opts.signedIn?.()) {
+        askSignIn("Sign in to take an office.");
         return;
       }
       showPanel(`mac-${icon.dataset.mac}`);
@@ -373,83 +413,340 @@ export function attachMac(opts: {
         logoutBtn.disabled = false;
       });
   });
-  const paintChat = () => {
-    if (!opts.signedIn?.()) {
-      chatLogFloor.hidden = true;
-      chatLogOffice.hidden = true;
-      if (floorHint) {
-        floorHint.hidden = false;
-        floorHint.textContent = "Sign in to chat.";
-      }
-      if (chatHint) chatHint.hidden = true;
-      chatInput.disabled = true;
-      chatInput.placeholder = "Sign in to talk…";
-      chatTabs.forEach((tab) => {
-        tab.classList.toggle("on", tab.dataset.chat === chatChannel);
-        tab.disabled = true;
+  const paintBadges = () => {
+    const n = inbox.length;
+    const label = n > 9 ? "9+" : String(n);
+    if (chatIconBadge) {
+      chatIconBadge.hidden = n === 0;
+      chatIconBadge.textContent = label;
+    }
+    chatIconBtn?.classList.toggle("has-badge", n > 0);
+  };
+
+  const paintInbox = () => {
+    chatLogRequests.replaceChildren();
+    for (const item of inbox) {
+      const el = document.createElement("div");
+      el.className = "mac-request-row";
+      const copy = document.createElement("div");
+      copy.className = "mac-request-copy";
+      const who = document.createElement("b");
+      who.textContent = item.fromName;
+      const line = document.createElement("span");
+      line.textContent =
+        item.kind === "knock"
+          ? " is at your door."
+          : item.text
+            ? ` “${item.text}”`
+            : " wants to whisper.";
+      copy.append(who, line);
+      const btns = document.createElement("div");
+      btns.className = "mac-request-btns";
+      const yes = document.createElement("button");
+      yes.type = "button";
+      yes.textContent = item.kind === "knock" ? "Open door" : "Talk";
+      yes.addEventListener("click", () => {
+        if (item.kind === "knock") opts.onKnockReply?.(item.fromId, true);
+        else opts.onWhisperReply?.(item.fromId, true);
+        const at = inbox.indexOf(item);
+        if (at >= 0) inbox.splice(at, 1);
+        paintInbox();
+        paintBadges();
+        paintChat();
       });
-      return;
+      const no = document.createElement("button");
+      no.type = "button";
+      no.textContent = item.kind === "knock" ? "Decline" : "Ignore";
+      no.addEventListener("click", () => {
+        if (item.kind === "knock") opts.onKnockReply?.(item.fromId, false);
+        else opts.onWhisperReply?.(item.fromId, false);
+        const at = inbox.indexOf(item);
+        if (at >= 0) inbox.splice(at, 1);
+        paintInbox();
+        paintBadges();
+      });
+      const block = document.createElement("button");
+      block.type = "button";
+      block.textContent = "Block";
+      block.addEventListener("click", () => {
+        if (item.kind === "knock") opts.onKnockReply?.(item.fromId, false);
+        else opts.onWhisperReply?.(item.fromId, false);
+        opts.onBlock?.(item.fromId, true);
+        const at = inbox.indexOf(item);
+        if (at >= 0) inbox.splice(at, 1);
+        paintInbox();
+        paintBadges();
+      });
+      btns.append(yes, no, block);
+      el.append(copy, btns);
+      chatLogRequests.appendChild(el);
     }
-    if (!claimed && chatChannel === "floor") chatChannel = "office";
+    paintBadges();
+    paintChannels();
+  };
+
+  const closeWhisper = (peerId: string) => {
+    const selected = chatTab === "whisper" && whisperPeer === peerId;
+    const idx = whisperThreads.findIndex((t) => t.peerId === peerId);
+    if (idx >= 0) whisperThreads.splice(idx, 1);
+    whisperLogs.delete(peerId);
+    for (let i = inbox.length - 1; i >= 0; i--) {
+      if (inbox[i].kind === "whisper" && inbox[i].fromId === peerId) inbox.splice(i, 1);
+    }
+    if (selected) {
+      chatTab = "requests";
+      whisperPeer = null;
+      chatLogWhisper.replaceChildren();
+    } else if (whisperPeer === peerId) {
+      whisperPeer = null;
+    }
+    paintInbox();
+    paintChat();
+  };
+
+  const addChannel = (
+    title: string,
+    preview: string,
+    on: boolean,
+    click: () => void,
+    extra?: { badge?: number; onEnd?: () => void },
+  ) => {
+    if (!whisperPeople) return;
+    const row = document.createElement("div");
+    row.className = "mac-whisper-thread" + (on ? " on" : "");
+    const who = document.createElement("button");
+    who.type = "button";
+    who.className = "mac-whisper-thread-who";
+    const name = document.createElement("b");
+    name.textContent = title;
+    if (extra?.badge) {
+      const badge = document.createElement("span");
+      badge.className = "mac-tab-badge";
+      badge.textContent = extra.badge > 9 ? "9+" : String(extra.badge);
+      name.append(" ", badge);
+    }
+    const sub = document.createElement("span");
+    sub.textContent = preview;
+    who.append(name, sub);
+    who.addEventListener("click", click);
+    row.appendChild(who);
+    if (extra?.onEnd) {
+      const end = document.createElement("button");
+      end.type = "button";
+      end.className = "mac-whisper-end";
+      end.textContent = "End";
+      end.addEventListener("click", (event) => {
+        event.stopPropagation();
+        extra.onEnd?.();
+      });
+      row.appendChild(end);
+    }
+    whisperPeople.appendChild(row);
+  };
+
+  const paintChannels = () => {
+    if (!whisperPeople) return;
+    whisperPeople.replaceChildren();
     const inOffice = Boolean(chatOffice);
-    const floorLocked = !claimed;
-    chatLogFloor.hidden = chatChannel !== "floor" || floorLocked || quiet;
-    chatLogOffice.hidden = chatChannel !== "office" || !inOffice || quiet;
-    if (floorHint) {
-      floorHint.hidden = !quiet && !(chatChannel === "floor" && floorLocked);
-      floorHint.textContent = quiet
-        ? "Quiet — the library is silent."
-        : "Claim an office to talk on the floor.";
+    addChannel("Floor", "everyone here", chatTab === "floor", () => {
+      chatTab = "floor";
+      paintChat();
+      chatInput.focus();
+    });
+    if (inOffice) {
+      addChannel("Office", "this room", chatTab === "office", () => {
+        chatTab = "office";
+        paintChat();
+        chatInput.focus();
+      });
     }
-    if (chatHint) chatHint.hidden = quiet || chatChannel !== "office" || inOffice;
-    chatInput.disabled =
-      quiet ||
-      (chatChannel === "office" && !inOffice) ||
-      (chatChannel === "floor" && floorLocked);
+    addChannel(
+      "Requests",
+      inbox.length ? `${inbox.length} waiting` : "none",
+      chatTab === "requests",
+      () => {
+        chatTab = "requests";
+        paintChat();
+      },
+      { badge: inbox.length },
+    );
+    for (const thread of whisperThreads) {
+      addChannel(
+        thread.name,
+        thread.pending ? "waiting…" : thread.last || (thread.open ? "connected" : ""),
+        chatTab === "whisper" && whisperPeer === thread.peerId,
+        () => {
+          whisperPeer = thread.peerId;
+          chatTab = "whisper";
+          paintChat();
+          chatInput.focus();
+        },
+        {
+          onEnd: () => {
+            opts.onWhisperEnd?.(thread.peerId);
+            closeWhisper(thread.peerId);
+          },
+        },
+      );
+    }
+  };
+
+  const paintChat = () => {
+    const inOffice = Boolean(chatOffice);
+    if (chatTab === "office" && !inOffice) chatTab = "floor";
+    if (chatTab === "whisper" && !whisperPeer) chatTab = "requests";
+    if (availableBox) availableBox.disabled = false;
+    const thread = whisperThreads.find((t) => t.peerId === whisperPeer);
+    const whisperOpen = Boolean(thread?.open);
+    chatLogFloor.hidden = chatTab !== "floor" || quiet;
+    chatLogOffice.hidden = chatTab !== "office" || !inOffice || quiet;
+    chatLogWhisper.hidden = chatTab !== "whisper" || quiet;
+    chatLogRequests.hidden = chatTab !== "requests";
+    syncSplit();
+    if (floorHint) {
+      floorHint.hidden = !quiet;
+      floorHint.textContent = "Quiet — the library is silent.";
+    }
+    if (chatHint) chatHint.hidden = quiet || chatTab !== "office" || inOffice;
+    if (whisperHint) {
+      const show =
+        !quiet &&
+        chatTab === "whisper" &&
+        (!whisperPeer || Boolean(thread?.pending) || !whisperOpen);
+      whisperHint.hidden = !show;
+      whisperHint.textContent = thread?.pending
+        ? `Waiting for ${thread.name} to accept.`
+        : whisperPeer && !whisperOpen
+          ? "Send a line — that’s the request."
+          : "Click someone on the floor, or wait for a request.";
+    }
+    const canType =
+      !quiet &&
+      ((chatTab === "office" && inOffice) ||
+        chatTab === "floor" ||
+        (chatTab === "whisper" && Boolean(whisperPeer) && !thread?.pending));
+    chatInput.disabled = !canType || chatTab === "requests";
     chatInput.placeholder = quiet
       ? "Quiet — library"
-      : chatChannel === "office"
+      : chatTab === "office"
         ? "Message this office…"
-        : "Message the floor…";
-    chatTabs.forEach((tab) => {
-      tab.classList.toggle("on", tab.dataset.chat === chatChannel);
-      tab.disabled = quiet || (tab.dataset.chat === "floor" && floorLocked);
-    });
-    if (chatChannel === "office" && inOffice) {
+        : chatTab === "whisper"
+          ? thread?.pending
+            ? "Waiting…"
+            : whisperOpen
+              ? `Whisper ${thread?.name ?? ""}…`
+              : whisperPeer
+                ? "Send a whisper request…"
+                : "Pick someone to whisper…"
+          : chatTab === "requests"
+            ? "Requests live here — no popups."
+            : "Message the floor…";
+    if (chatTab === "office" && inOffice) {
       chatLogOffice.replaceChildren(...(officeLogs.get(chatOffice!) ?? []));
       chatLogOffice.scrollTop = chatLogOffice.scrollHeight;
     }
+    if (chatTab === "whisper" && whisperPeer) {
+      chatLogWhisper.replaceChildren(...(whisperLogs.get(whisperPeer) ?? []));
+      chatLogWhisper.scrollTop = chatLogWhisper.scrollHeight;
+    }
+    paintChannels();
   };
 
-  const rowEl = (name: string, text: string, self: boolean) => {
+  const chatTime = () =>
+    new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+  const addBubble = (row: HTMLElement, text: string) => {
+    const bubble = document.createElement("div");
+    bubble.className = "mac-chat-bubble";
+    bubble.textContent = text;
+    row.appendChild(bubble);
+  };
+
+  const sameSpeaker = (el: HTMLElement, name: string, self: boolean, fromId?: string) => {
+    if (el.classList.contains("self") !== self) return false;
+    if (fromId && el.dataset.peerId) return el.dataset.peerId === fromId;
+    return el.dataset.name === name;
+  };
+
+  const rowEl = (name: string, text: string, self: boolean, fromId?: string) => {
     const row = document.createElement("div");
     row.className = "mac-chat-row" + (self ? " self" : "");
-    row.innerHTML = `<b></b> <span></span>`;
-    row.querySelector("b")!.textContent = name;
-    row.querySelector("span")!.textContent = text;
+    row.dataset.name = name;
+    if (fromId) row.dataset.peerId = fromId;
+    const head = document.createElement("div");
+    head.className = "mac-chat-head";
+    const who = document.createElement("b");
+    who.textContent = name;
+    const time = document.createElement("span");
+    time.className = "mac-chat-time";
+    time.textContent = chatTime();
+    head.append(who, time);
+    row.appendChild(head);
+    addBubble(row, text);
     return row;
   };
 
-  chatTabs.forEach((tab) => {
-    tab.addEventListener("click", () => {
-      if (tab.dataset.chat === "floor" && !claimed) return;
-      chatChannel = tab.dataset.chat === "office" ? "office" : "floor";
-      paintChat();
-    });
+  const pushMsg = (list: HTMLElement[], name: string, text: string, self: boolean, fromId?: string) => {
+    const last = list[list.length - 1];
+    if (last && sameSpeaker(last, name, self, fromId)) {
+      addBubble(last, text);
+      return last;
+    }
+    const row = rowEl(name, text, self, fromId);
+    list.push(row);
+    while (list.length > 40) list.shift();
+    return row;
+  };
+
+  availableBox?.addEventListener("change", () => {
+    opts.onChatAvailable?.(Boolean(availableBox.checked));
   });
+  const paintTz = () => {
+    if (tzReadout) tzReadout.textContent = timezoneLabel();
+  };
+  if (shareTzBox) {
+    shareTzBox.checked = false;
+    try {
+      shareTzBox.checked = localStorage.getItem("haw-share-tz") === "1";
+    } catch {
+      /* ignore */
+    }
+    paintTz();
+    shareTzBox.addEventListener("change", () => {
+      try {
+        localStorage.setItem("haw-share-tz", shareTzBox.checked ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      paintTz();
+      opts.onShareTz?.(shareTzBox.checked);
+    });
+  }
   chatForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!opts.signedIn?.()) {
-      askSignIn("Sign in to chat.");
-      return;
-    }
     const text = chatInput.value.trim();
     if (!text) return;
     if (quiet) return;
-    if (chatChannel === "office" && !chatOffice) return;
-    if (chatChannel === "floor" && !claimed) return;
-    opts.onChat(text, chatChannel);
-    chatInput.value = "";
+    if (chatTab === "requests") return;
+    if (chatTab === "office" && !chatOffice) return;
+    if (chatTab === "whisper") {
+      if (!whisperPeer) return;
+      const thread = whisperThreads.find((t) => t.peerId === whisperPeer);
+      if (thread?.pending) return;
+      if (!thread) {
+        whisperThreads.push({ peerId: whisperPeer, name: whisperPeer.slice(0, 8), pending: true });
+      } else if (!thread.open) {
+        thread.pending = true;
+      }
+      opts.onWhisper?.(text, whisperPeer);
+      chatInput.value = "";
+      paintChat();
+      return;
+    }
+    if (chatTab === "floor" || chatTab === "office") {
+      opts.onChat(text, chatTab);
+      chatInput.value = "";
+    }
   });
 
   root.querySelector("#mac-alert-ok")?.addEventListener("click", () => {
@@ -504,6 +801,10 @@ export function attachMac(opts: {
       if (!on) {
         alertEl.hidden = true;
         knockFrom = "";
+        for (let i = inbox.length - 1; i >= 0; i--) {
+          if (inbox[i].kind === "knock") inbox.splice(i, 1);
+        }
+        paintInbox();
       }
       paintChat();
     },
@@ -519,16 +820,94 @@ export function attachMac(opts: {
     },
     askSignIn,
     showKnock(fromName: string, fromId: string) {
-      if (!claimed) return;
       if (opts.getPrivacy() === "focus") return;
-      knockFrom = fromId;
-      root.classList.remove("collapsed");
-      alertBody.textContent = `${fromName} is at your door.`;
-      alertEl.hidden = false;
+      if (inbox.some((item) => item.kind === "knock" && item.fromId === fromId)) return;
+      inbox.push({ kind: "knock", fromId, fromName, text: `${fromName} is at your door.` });
+      paintInbox();
+      paintChat();
     },
     hideKnock() {
+      for (let i = inbox.length - 1; i >= 0; i--) {
+        if (inbox[i].kind === "knock") inbox.splice(i, 1);
+      }
       alertEl.hidden = true;
       knockFrom = "";
+      paintInbox();
+    },
+    setChatAvailable(on: boolean) {
+      if (availableBox) availableBox.checked = on;
+    },
+    composeWhisper(peerId: string, name: string, pending = false) {
+      let thread = whisperThreads.find((t) => t.peerId === peerId);
+      if (!thread) {
+        thread = { peerId, name, pending };
+        whisperThreads.push(thread);
+      } else {
+        thread.name = name;
+        if (pending && !thread.open) thread.pending = true;
+      }
+      whisperPeer = peerId;
+      chatTab = "whisper";
+      root.classList.remove("collapsed");
+      showPanel("mac-chat");
+      paintChat();
+      chatInput.focus();
+    },
+    openWhisper(peerId: string, name: string) {
+      let thread = whisperThreads.find((t) => t.peerId === peerId);
+      if (!thread) {
+        thread = { peerId, name };
+        whisperThreads.push(thread);
+      }
+      thread.name = name;
+      thread.pending = false;
+      thread.open = true;
+      for (let i = inbox.length - 1; i >= 0; i--) {
+        if (inbox[i].kind === "whisper" && inbox[i].fromId === peerId) inbox.splice(i, 1);
+      }
+      whisperPeer = peerId;
+      chatTab = "whisper";
+      paintInbox();
+      paintChat();
+    },
+    failWhisper(peerId?: string) {
+      const id = peerId ?? whisperPeer;
+      const thread = whisperThreads.find((t) => t.peerId === id);
+      if (thread) thread.pending = false;
+      paintChat();
+    },
+    addWhisper(name: string, text: string, peerId: string, self = false, fromId?: string) {
+      const thread = whisperThreads.find((t) => t.peerId === peerId);
+      if (thread) thread.last = text;
+      const list = whisperLogs.get(peerId) ?? [];
+      const prev = list[list.length - 1];
+      const row = pushMsg(list, name, text, self, fromId ?? (self ? undefined : peerId));
+      whisperLogs.set(peerId, list);
+      if (chatTab === "whisper" && whisperPeer === peerId) {
+        if (row !== prev) chatLogWhisper.appendChild(row);
+        chatLogWhisper.scrollTop = chatLogWhisper.scrollHeight;
+      }
+      if (chatTab === "whisper") paintChannels();
+    },
+    addWhisperRequest(fromId: string, fromName: string, text?: string) {
+      const existing = inbox.find((item) => item.kind === "whisper" && item.fromId === fromId);
+      if (existing) existing.text = text ?? "";
+      else inbox.push({ kind: "whisper", fromId, fromName, text: text ?? "" });
+      paintInbox();
+      paintChat();
+    },
+    endWhisper(peerId: string) {
+      closeWhisper(peerId);
+    },
+    endAllWhispers() {
+      whisperThreads.length = 0;
+      whisperLogs.clear();
+      whisperPeer = null;
+      for (let i = inbox.length - 1; i >= 0; i--) {
+        if (inbox[i].kind === "whisper") inbox.splice(i, 1);
+      }
+      paintInbox();
+      paintChat();
     },
     setChatRoom(deskId: string | null) {
       if (chatOffice === deskId) return;
@@ -549,6 +928,7 @@ export function attachMac(opts: {
         time: string;
         self?: boolean;
         blocked?: boolean;
+        chatAvailable?: boolean;
       }[],
     ) {
       const list = root.querySelector("#mac-floor-list");
@@ -561,7 +941,7 @@ export function attachMac(opts: {
       }
       if (hint) {
         hint.textContent =
-          "People checked into an office. Block hides their floor chat, knocks, and keeps them out of your office.";
+          "People checked into an office. Whisper if they're available. Block hides their floor chat, knocks, and keeps them out of your office.";
       }
       for (const row of rows) {
         const el = document.createElement("div");
@@ -572,6 +952,27 @@ export function attachMac(opts: {
         el.querySelector("span")!.textContent = `${row.desk} · ${mode}`;
         el.querySelector(".mac-floor-time")!.textContent = row.time;
         if (!row.self) {
+          const whisper = document.createElement("button");
+          whisper.type = "button";
+          whisper.className = "mac-floor-whisper";
+          const canWhisper =
+            Boolean(row.chatAvailable) &&
+            row.privacy !== "busy" &&
+            row.privacy !== "focus" &&
+            !row.blocked;
+          whisper.textContent = "Whisper";
+          whisper.title = "Open whisper card";
+          const inspect = (event: Event) => {
+            event.stopPropagation();
+            opts.onInspectPerson?.(row.peerId, row.name);
+          };
+          whisper.addEventListener("click", inspect);
+          const who = el.querySelector<HTMLElement>(".mac-floor-who");
+          if (who) {
+            who.style.cursor = "pointer";
+            who.title = "View";
+            who.addEventListener("click", inspect);
+          }
           const btn = document.createElement("button");
           btn.type = "button";
           btn.className = "mac-floor-block";
@@ -580,30 +981,53 @@ export function attachMac(opts: {
             event.stopPropagation();
             opts.onBlock?.(row.peerId, !row.blocked);
           });
+          el.querySelector(".mac-floor-meta")!.appendChild(whisper);
           el.querySelector(".mac-floor-meta")!.appendChild(btn);
         }
         list.appendChild(el);
       }
     },
-    addChat(name: string, text: string, self = false, channel: ChatChannel = "floor", deskId?: string) {
-      if (!opts.signedIn?.()) return;
+    renameSpeaker(peerId: string, name: string) {
+      if (!peerId || !name) return;
+      const retitle = (row: HTMLElement) => {
+        if (row.dataset.peerId !== peerId) return;
+        row.dataset.name = name;
+        const who = row.querySelector(".mac-chat-head b");
+        if (who) who.textContent = name;
+      };
+      for (const row of Array.from(chatLogFloor.children) as HTMLElement[]) retitle(row);
+      for (const list of officeLogs.values()) for (const row of list) retitle(row);
+      for (const list of whisperLogs.values()) for (const row of list) retitle(row);
+      for (const thread of whisperThreads) {
+        if (thread.peerId === peerId) thread.name = name;
+      }
+      for (const item of inbox) {
+        if (item.fromId === peerId) item.fromName = name;
+      }
+      paintInbox();
+      paintChat();
+    },
+    addChat(name: string, text: string, self = false, channel: ChatChannel = "floor", deskId?: string, fromId?: string) {
       if (quiet) return;
-      if (channel === "floor" && !claimed) return;
-      const row = rowEl(name, text, self);
       if (channel === "office") {
         const id = deskId ?? chatOffice;
         if (!id) return;
         const list = officeLogs.get(id) ?? [];
-        list.push(row);
-        while (list.length > 40) list.shift();
+        const prev = list[list.length - 1];
+        const row = pushMsg(list, name, text, self, fromId);
         officeLogs.set(id, list);
-        if (chatChannel === "office" && chatOffice === id) {
-          chatLogOffice.appendChild(row);
+        if (chatTab === "office" && chatOffice === id) {
+          if (row !== prev) chatLogOffice.appendChild(row);
           chatLogOffice.scrollTop = chatLogOffice.scrollHeight;
         }
         return;
       }
-      chatLogFloor.appendChild(row);
+      const last = chatLogFloor.lastElementChild as HTMLElement | null;
+      if (last && sameSpeaker(last, name, self, fromId)) {
+        addBubble(last, text);
+      } else {
+        chatLogFloor.appendChild(rowEl(name, text, self, fromId));
+      }
       while (chatLogFloor.children.length > 40) chatLogFloor.removeChild(chatLogFloor.children[0]);
       chatLogFloor.scrollTop = chatLogFloor.scrollHeight;
     },

@@ -15,7 +15,8 @@ import { attachCameraPan } from "./cameraPan";
 import { attachDesks, type Desk } from "./desks";
 import { attachEditor } from "./editor";
 import { fromWorld, toWorld } from "./coords";
-import { elevatorSpawn, ensureGridDefaults, kindAt, sidewalkSpawn, spreadConferenceFurniture, syncGridDerived } from "./grid";
+import { FIRST_FLOOR, floorName } from "./floors";
+import { elevatorSpawn, ensureGridDefaults, inElevator, sidewalkSpawn, spreadConferenceFurniture, syncGridDerived } from "./grid";
 import {
   bindSessionWallet,
   fetchAuthConfig,
@@ -46,10 +47,12 @@ import type { Pose } from "./protocol";
 import { connectRoom } from "./roomClient";
 import {
   attachConferenceReserve,
+  activeTimeZone,
   conferenceAtCell,
   nextBookingLabel,
   pickConferenceGroup,
   ptDayKey,
+  shareTimezone,
 } from "./conferenceReserve";
 import { compressOfficeAd } from "./officeAdImage";
 import type { ConferenceReservation, OfficeAd } from "./protocol";
@@ -80,6 +83,15 @@ const peekEl = document.querySelector<HTMLElement>("#mac-peek")!;
 const peekTitle = document.querySelector("#mac-peek-title")!;
 const peekName = document.querySelector("#mac-peek-name")!;
 const peekMeta = document.querySelector("#mac-peek-meta")!;
+const personCard = document.querySelector<HTMLElement>("#person-card")!;
+const personCardTitle = document.querySelector("#person-card-title")!;
+const personCardName = document.querySelector("#person-card-name")!;
+const personCardMeta = document.querySelector<HTMLElement>("#person-card-meta")!;
+const personCardNote = document.querySelector<HTMLElement>("#person-card-note")!;
+const personCardActions = document.querySelector<HTMLElement>("#person-card-actions")!;
+let inspectPerson: ((id: string, name: string) => void) | null = null;
+let hidePersonCard: (() => void) | null = null;
+let personNote: ((text: string) => void) | null = null;
 const dayEnd = document.querySelector<HTMLElement>("#day-end")!;
 const claimShift = document.querySelector<HTMLElement>("#claim-shift")!;
 const claimShiftHello = document.querySelector("#claim-shift-hello")!;
@@ -94,9 +106,18 @@ const dayEndStay = document.querySelector<HTMLButtonElement>("#day-end-stay")!;
 const dayEndOk = document.querySelector<HTMLButtonElement>("#day-end-ok")!;
 const dayEndWell = document.querySelector<HTMLElement>("#day-end-well")!;
 const dayEndCopy = document.querySelector("#day-end-copy")!;
+const dayEndTitle = document.querySelector("#day-end-title")!;
+const dayEndFloors = document.querySelector<HTMLElement>("#day-end-floors")!;
+const floorReadout = document.querySelector<HTMLElement>("#floor-readout");
 let dayEndMode: "ask" | "done" = "ask";
 let askClockOut: (() => void) | null = null;
 let goHome: (() => void) | null = null;
+let rideFloor: ((floor: number) => void) | null = null;
+let viewFloor = FIRST_FLOOR;
+let maxFloor = FIRST_FLOOR;
+let openFloors = [FIRST_FLOOR];
+let pendingFloorRide: number | null = null;
+let shiftStartedAt: number | null = null;
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -144,10 +165,10 @@ function centerCameraOn(wx: number, wz: number) {
   camera.position.copy(controls.target).add(camOffset);
 }
 
-scene.add(new THREE.AmbientLight(0xfff4e8, 0.72));
-const hemi = new THREE.HemisphereLight(0xe7f3ff, 0x6b8f4a, 0.95);
+scene.add(new THREE.AmbientLight(0xfff4e8, 0.62));
+const hemi = new THREE.HemisphereLight(0xe7f3ff, 0x6b8f4a, 0.82);
 scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xfff6dd, 1.55);
+const sun = new THREE.DirectionalLight(0xfff6dd, 1.45);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.left = -50;
@@ -192,6 +213,11 @@ let remotesCtl: {
   walkTo: (id: string, x: number, y: number) => void;
   walkToSit: (id: string, seat: { x: number; y: number; facing: number }) => void;
   remove: (id: string) => void;
+  clear: () => void;
+  pick: (
+    camera: THREE.Camera,
+    pointer: THREE.Vector2,
+  ) => { id: string; name: string; x: number; y: number; distance: number } | null;
 } | null = null;
 let desksCtl: ReturnType<typeof attachDesks> | null = null;
 let projectConfBadges: (() => void) | null = null;
@@ -201,6 +227,7 @@ let selfName = "";
 let selfSignedIn = false;
 let blocked = new Set<string>();
 let blockedBy = new Set<string>();
+const chatAvailable = new Map<string, boolean>();
 let lastTick = performance.now();
 let lastFloorPaint = 0;
 let lastQuiet = false;
@@ -339,6 +366,25 @@ loadPlate()
       colliderRoots: [editRoot, structure],
     });
     remotesCtl = remotes;
+
+    const setFixtureAvatarsVisible = (on: boolean) => {
+      for (const avatar of plate.avatars ?? []) {
+        if (!avatar.id || avatar.id === "you") continue;
+        const mesh = avatarsRoot.getObjectByName(`avatar-${avatar.id}`);
+        if (mesh) mesh.visible = on;
+      }
+    };
+    const paintFloorHud = () => {
+      if (!floorReadout) return;
+      const listed = openFloors.includes(viewFloor);
+      const many = openFloors.length > 1 || viewFloor > FIRST_FLOOR;
+      floorReadout.hidden = !many;
+      if (!listed && viewFloor > FIRST_FLOOR) {
+        floorReadout.textContent = `floor ${viewFloor} · empty`;
+      } else {
+        floorReadout.textContent = many ? `floor ${viewFloor}` : "floor 1";
+      }
+    };
 
     livePlate = plate;
     const elev = elevatorSpawn(plate);
@@ -493,22 +539,261 @@ loadPlate()
       return label ? `conference · ${label}` : "conference";
     };
 
+    const joinGate = document.querySelector<HTMLElement>("#join-gate")!;
+    const joinHello = document.querySelector("#join-hello")!;
+    const joinActions = document.querySelector<HTMLElement>("#join-actions")!;
+    const joinAuth = document.querySelector<HTMLElement>("#join-auth")!;
+    const joinEnter = document.querySelector<HTMLButtonElement>("#join-enter")!;
+    const joinGuest = document.querySelector<HTMLButtonElement>("#join-guest")!;
+    const joinSignin = document.querySelector<HTMLButtonElement>("#join-signin")!;
+    const joinBack = document.querySelector<HTMLButtonElement>("#join-back")!;
+    const joinEmail = document.querySelector<HTMLInputElement>("#join-email")!;
+    const joinEmailSend = document.querySelector<HTMLButtonElement>("#join-email-send")!;
+    const joinCodeWrap = document.querySelector<HTMLElement>("#join-email-code-wrap")!;
+    const joinCode = document.querySelector<HTMLInputElement>("#join-email-code")!;
+    const joinVerify = document.querySelector<HTMLButtonElement>("#join-email-verify")!;
+    const joinHint = document.querySelector<HTMLElement>("#join-auth-hint")!;
+    const joinGoogleWrap = document.querySelector<HTMLElement>("#join-google-wrap")!;
+    const joinGoogle = document.querySelector<HTMLElement>("#join-google")!;
+
+    const setJoinHint = (text: string) => {
+      joinHint.textContent = text;
+    };
+
+    const loadJoinGoogle = (onCredential: (cred: string) => void) => {
+      const clientId = authConfig.googleClientId;
+      if (!clientId || !joinGoogle) return;
+      const render = () => {
+        const gsi = window.google?.accounts?.id;
+        if (!gsi) return;
+        gsi.initialize({
+          client_id: clientId,
+          callback: (response) => onCredential(response.credential),
+          auto_select: false,
+          cancel_on_tap_outside: true,
+        });
+        joinGoogle.replaceChildren();
+        gsi.renderButton(joinGoogle, {
+          type: "standard",
+          theme: "outline",
+          size: "medium",
+          text: "continue_with",
+          width: 320,
+        });
+        joinGoogleWrap.hidden = false;
+      };
+      if (window.google?.accounts?.id) {
+        render();
+        return;
+      }
+      const existing = document.querySelector<HTMLScriptElement>("script[data-gsi]");
+      if (existing) {
+        existing.addEventListener("load", render, { once: true });
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      script.defer = true;
+      script.dataset.gsi = "1";
+      script.addEventListener("load", render, { once: true });
+      document.head.appendChild(script);
+    };
+
+    const enterFloor = () => {
+      shiftStartedAt = Date.now();
+      joinGate.hidden = true;
+      document.querySelector("#mac")?.classList.remove("collapsed");
+      const spawn = elevatorSpawn(plate);
+      playerCtl?.stand();
+      playerCtl?.goTo(spawn.x, spawn.y, true);
+      const pose = playerCtl?.pose();
+      if (pose) {
+        const [wx, , wz] = toWorld(pose.x, pose.y, plate);
+        centerCameraOn(wx, wz);
+      }
+    };
+
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        enterFloor();
+        resolve();
+      };
+      const showAuth = (on: boolean) => {
+        joinActions.hidden = on;
+        joinAuth.hidden = !on;
+      };
+      joinGuest.disabled = false;
+      joinGuest.addEventListener("click", () => {
+        void (async () => {
+          if (session) {
+            const token = session.token;
+            if (token) dropSessionWallet(token);
+            await logoutAccount();
+            clearAccountEmail();
+            session = null;
+            identity.email = undefined;
+            saveIdentity(identity);
+            guest = await ensureGuestWallet(identity.id);
+            identity.address = guest.address;
+            selfSignedIn = false;
+            youAvatar.id = identity.id;
+            youAvatar.name = identity.name;
+            setAvatarName(you, identity.name);
+          }
+          finish();
+        })();
+      });
+      if (session) {
+        joinHello.textContent = `Welcome back, ${identity.name}.`;
+        joinEnter.hidden = false;
+        joinEnter.disabled = false;
+        joinEnter.textContent = `Clock in as ${identity.name}`;
+        joinSignin.hidden = true;
+        joinEnter.addEventListener("click", finish);
+      } else {
+        joinHello.textContent = "Clock in to walk the floor.";
+        joinEnter.hidden = true;
+        joinSignin.disabled = false;
+        joinSignin.addEventListener("click", () => {
+          showAuth(true);
+          loadJoinGoogle((credential) => {
+            setJoinHint("Signing in…");
+            void loginWithGoogle({
+              credential,
+              guestId: identity.id,
+              name: identity.name,
+              color: identity.color,
+            }).then(async (result) => {
+              if (!result.ok) {
+                setJoinHint(result.error || "Google sign-in failed");
+                return;
+              }
+              const wallet = await ensureSessionWallet(result.token, true);
+              await bindSessionWallet(wallet.address);
+              guest = wallet;
+              session = {
+                user: result.user,
+                token: result.token,
+                address: wallet.address,
+                blocked: [...blocked],
+                officeAd: officeAdState,
+              };
+              applyAccount(result.user);
+              identity.id = result.user.id;
+              identity.name = sanitizeName(result.user.name) || identity.name;
+              identity.color = result.user.color || identity.color;
+              identity.email = result.user.email;
+              identity.address = wallet.address;
+              youAvatar.id = identity.id;
+              youAvatar.name = identity.name;
+              youAvatar.color = identity.color;
+              setAvatarName(you, identity.name);
+              selfId = identity.id;
+              selfName = identity.name;
+              selfSignedIn = true;
+              finish();
+            });
+          });
+        });
+        joinBack.addEventListener("click", () => showAuth(false));
+        joinEmailSend.addEventListener("click", () => {
+          const email = joinEmail.value.trim();
+          if (!email) {
+            setJoinHint("Enter your email.");
+            return;
+          }
+          joinEmailSend.disabled = true;
+          setJoinHint("Sending code…");
+          void startEmailCode(email).then((result) => {
+            joinEmailSend.disabled = false;
+            if (!result.ok) {
+              setJoinHint(result.error || "Couldn't send a code.");
+              return;
+            }
+            joinCodeWrap.hidden = false;
+            setJoinHint(result.devCode ? `Dev code: ${result.devCode}` : "Check your email for a code.");
+            joinCode.focus();
+          });
+        });
+        joinVerify.addEventListener("click", () => {
+          const email = joinEmail.value.trim();
+          const code = joinCode.value.trim();
+          if (!email || !code) {
+            setJoinHint("Enter the code from your email.");
+            return;
+          }
+          joinVerify.disabled = true;
+          setJoinHint("Signing in…");
+          void verifyEmailCode({
+            email,
+            code,
+            guestId: identity.id,
+            name: identity.name,
+            color: identity.color,
+          }).then(async (result) => {
+            joinVerify.disabled = false;
+            if (!result.ok) {
+              setJoinHint(result.error || "Couldn't sign in.");
+              return;
+            }
+            const wallet = await ensureSessionWallet(result.token, true);
+            await bindSessionWallet(wallet.address);
+            guest = wallet;
+            session = {
+              user: result.user,
+              token: result.token,
+              address: wallet.address,
+              blocked: [...blocked],
+              officeAd: officeAdState,
+            };
+            applyAccount(result.user);
+            identity.id = result.user.id;
+            identity.name = sanitizeName(result.user.name) || identity.name;
+            identity.color = result.user.color || identity.color;
+            identity.email = result.user.email;
+            identity.address = wallet.address;
+            youAvatar.id = identity.id;
+            youAvatar.name = identity.name;
+            youAvatar.color = identity.color;
+            setAvatarName(you, identity.name);
+            selfId = identity.id;
+            selfName = identity.name;
+            selfSignedIn = true;
+            finish();
+          });
+        });
+      }
+    });
+
     const room = connectRoom({
       roomId: plate.id,
       identity,
       getToken: () => readToken(),
       getPose: () => playerCtl?.pose() ?? youAvatar,
-      onWelcome: (peers, _self, claims, mineBlocked, mineBlockedBy, officeAds) => {
+      onWelcome: (peers, self, claims, mineBlocked, mineBlockedBy, officeAds, floor, openMax, floors) => {
         if (mineBlocked?.length) {
           blocked = new Set(mineBlocked);
           writeBlocked(mineBlocked);
         }
         blockedBy = new Set(mineBlockedBy ?? []);
-        for (const peer of peers) remotes.spawn(peer);
+        viewFloor = floor ?? self.floor ?? FIRST_FLOOR;
+        openFloors = floors?.length ? floors : [FIRST_FLOOR];
+        maxFloor = openMax ?? openFloors[openFloors.length - 1] ?? FIRST_FLOOR;
+        desks.setViewFloor(viewFloor);
+        setFixtureAvatarsVisible(viewFloor === FIRST_FLOOR);
+        remotes.clear();
+        chatAvailable.clear();
+        if (self.chatAvailable) chatAvailable.set(self.id, true);
+        for (const peer of peers) {
+          remotes.spawn(peer);
+          chatAvailable.set(peer.id, Boolean(peer.chatAvailable));
+        }
         desks.applyAll(claims);
         for (const ad of officeAds ?? []) applyDeskAd(ad.deskId, ad.peerId, ad);
         paintFloorRoster();
         syncMacDesk();
+        paintFloorHud();
         if (welcomed) return;
         welcomed = true;
         const mine = desks.mine(identity.id);
@@ -517,13 +802,50 @@ loadPlate()
           if (desk) playerCtl?.goSit(desks.seat(desk));
         }
       },
+      onFloors: (floor, openMax, floors) => {
+        viewFloor = floor;
+        openFloors = floors?.length ? floors : [FIRST_FLOOR];
+        maxFloor = openMax ?? openFloors[openFloors.length - 1] ?? FIRST_FLOOR;
+        paintFloorHud();
+        if (!dayEnd.hidden && dayEndMode === "ask") paintElevatorFloors();
+      },
+      onFloorView: (view) => {
+        const rode = pendingFloorRide != null && pendingFloorRide === view.floor;
+        viewFloor = view.floor;
+        openFloors = view.floors?.length ? view.floors : [FIRST_FLOOR];
+        maxFloor = view.maxFloor ?? openFloors[openFloors.length - 1] ?? FIRST_FLOOR;
+        desks.setViewFloor(viewFloor);
+        setFixtureAvatarsVisible(viewFloor === FIRST_FLOOR);
+        remotes.clear();
+        for (const peer of view.peers) {
+          remotes.spawn(peer);
+          chatAvailable.set(peer.id, Boolean(peer.chatAvailable));
+        }
+        desks.applyAll(view.claims);
+        for (const ad of view.officeAds ?? []) applyDeskAd(ad.deskId, ad.peerId, ad);
+        paintFloorRoster();
+        syncMacDesk();
+        paintFloorHud();
+        const mine = desks.mine(identity.id);
+        if (!mine) playerCtl?.stand();
+        if (rode) {
+          const spawn = elevatorSpawn(plate);
+          playerCtl?.stand();
+          playerCtl?.goTo(spawn.x, spawn.y, true);
+          leaveArmed = false;
+          status.textContent = floorName(viewFloor);
+        }
+        pendingFloorRide = null;
+      },
       onJoin: (peer) => {
         remotes.spawn(peer);
-
+        chatAvailable.set(peer.id, Boolean(peer.chatAvailable));
+        paintFloorRoster();
       },
       onLeave: (id) => {
         remotes.remove(id);
-        desks.releasePeer(id);
+        chatAvailable.delete(id);
+        macCtl?.endWhisper(id);
         paintFloorRoster();
       },
       onMove: (id, x, y) => remotes.walkTo(id, x, y),
@@ -531,6 +853,11 @@ loadPlate()
       onProfile: (id, name) => {
         remotes.rename(id, name);
         desks.rename(id, name);
+        mac.renameSpeaker(id, name);
+        if (personCard.dataset.id === id) {
+          personCard.dataset.name = name;
+          personCardName.textContent = name;
+        }
         paintFloorRoster();
       },
       onReservations: (list) => {
@@ -577,7 +904,27 @@ loadPlate()
         if (isMuted(id)) return;
         const you = playerCtl?.pose();
         if (you && poseInQuietZone(plate, you)) return;
-        mac.addChat(name, text, id === identity.id, channel, deskId);
+        mac.addChat(name, text, id === identity.id, channel, deskId, id);
+      },
+      onChatAvailable: (id, on) => {
+        chatAvailable.set(id, on);
+        paintFloorRoster();
+      },
+      onWhisperRequest: (fromId, fromName, text) => {
+        if (blocked.has(fromId) || isMuted(fromId)) return;
+        mac.addWhisperRequest(fromId, fromName, text);
+      },
+      onWhisperOpen: (peerId, name) => {
+        mac.openWhisper(peerId, name);
+      },
+      onWhisper: (id, name, text, peerId) => {
+        if (isMuted(id) && id !== identity.id) return;
+        mac.addWhisper(name, text, peerId, id === identity.id, id);
+      },
+      onWhisperEnd: (peerId, reason) => {
+        mac.endWhisper(peerId);
+        if (reason === "declined") status.textContent = "whisper declined";
+        else if (reason === "left") status.textContent = "they left";
       },
       onKnock: (_deskId, fromId, fromName) => {
         if (blocked.has(fromId)) return;
@@ -620,6 +967,11 @@ loadPlate()
           status.textContent = "that desk is taken";
           return;
         }
+        if (message === "not available to chat" || message === "not available for whispers") {
+          macCtl?.failWhisper();
+          personNote?.("they're not available for whispers");
+          return;
+        }
         status.textContent = message;
         const err = document.querySelector("#conf-reserve-error");
         if (err && confReserve?.isOpen()) err.textContent = message;
@@ -652,6 +1004,89 @@ loadPlate()
       status.textContent = nextBookingLabel(reservations, conf.id) || "conference";
     };
 
+    const personProfile = (peerId: string) => {
+      const claim = desks.mine(peerId);
+      const mode = claim
+        ? claim.privacy === "focus"
+          ? "Focus"
+          : claim.privacy === "busy"
+            ? "Busy"
+            : "Open"
+        : "Walking the floor";
+      const desk = claim ? desks.get(claim.deskId) : undefined;
+      const deskLabel = desk ? desks.pretty(desk) : "No desk";
+      const available = chatAvailable.get(peerId) === true;
+      const lines = [
+        deskLabel,
+        mode,
+        available ? "Available for whispers" : "Not available for whispers",
+      ];
+      if (claim?.since) lines.push(workTime(claim.since));
+      return lines.join(" · ");
+    };
+
+    const whisperBlockReason = (peerId: string) => {
+      if (!peerId || peerId === identity.id) return "that's you";
+      if (blocked.has(peerId) || blockedBy.has(peerId)) return "you can't whisper them";
+      const claim = desks.mine(peerId);
+      if (claim?.privacy === "busy" || claim?.privacy === "focus") return "they're not taking whispers";
+      if (chatAvailable.get(peerId) !== true) return "they're not available for whispers";
+      return null;
+    };
+
+    hidePersonCard = () => {
+      personCard.hidden = true;
+      personCardNote.hidden = true;
+      personCardMeta.hidden = true;
+      delete personCard.dataset.mode;
+      delete personCard.dataset.id;
+    };
+    personNote = (text: string) => {
+      personCardNote.hidden = false;
+      personCardNote.textContent = text;
+      status.textContent = text;
+    };
+    inspectPerson = (id: string, name: string) => {
+      if (!id || id === identity.id) return;
+      personCard.dataset.mode = "inspect";
+      personCard.dataset.id = id;
+      personCard.dataset.name = name;
+      personCardTitle.textContent = "Person";
+      personCardName.textContent = name;
+      personCardMeta.hidden = true;
+      personCardMeta.textContent = personProfile(id);
+      personCardNote.hidden = true;
+      personCardActions.hidden = false;
+      personCard.hidden = false;
+    };
+
+    const beginWhisper = (peerId: string, name: string) => {
+      const why = whisperBlockReason(peerId);
+      if (why) {
+        if (personCard.hidden) inspectPerson?.(peerId, name);
+        personNote?.(why);
+        return true;
+      }
+      room.sendWhisper(peerId);
+      macCtl?.composeWhisper(peerId, name, true);
+      hidePersonCard?.();
+      return true;
+    };
+
+    document.querySelector("#person-card-close")?.addEventListener("click", () => hidePersonCard?.());
+    document.querySelector("#person-card-profile")?.addEventListener("click", () => {
+      const id = personCard.dataset.id;
+      if (!id) return;
+      personCardMeta.hidden = false;
+      personCardMeta.textContent = personProfile(id);
+      personCardNote.hidden = true;
+    });
+    document.querySelector("#person-card-whisper")?.addEventListener("click", () => {
+      const id = personCard.dataset.id;
+      const name = personCard.dataset.name ?? "";
+      if (id) beginWhisper(id, name);
+    });
+
     playerCtl = attachPlayer({
       plate,
       canvas,
@@ -662,7 +1097,12 @@ loadPlate()
       ground,
       overlay: document.querySelector("#enter-overlay"),
       isBlocked: () =>
-        editor.enabled() || editor.busy() || !claimShift.hidden || (!dayEnd.hidden && dayEndMode === "ask") || Boolean(confReserve?.isOpen()),
+        editor.enabled() ||
+        editor.busy() ||
+        !claimShift.hidden ||
+        !joinGate.hidden ||
+        (!dayEnd.hidden && dayEndMode === "ask") ||
+        Boolean(confReserve?.isOpen()),
       colliderRoots: [editRoot, structure],
       onMove: (x, y, facing) => room.sendMove(x, y, facing),
       onClickFx: (wx, wz) => clickVfx?.spawn(wx, wz),
@@ -711,6 +1151,11 @@ loadPlate()
             if (prompt.kind === "leave") leaveArmed = false;
             prompt.hide();
           }
+          return true;
+        }
+        const person = remotes.pick(camera, pointer);
+        if (person) {
+          inspectPerson?.(person.id, person.name);
           return true;
         }
         const sitHit = desks.pickSeat(camera, pointer);
@@ -828,6 +1273,7 @@ loadPlate()
       if (claim && claim.peerId !== identity.id) return false;
       if (claim && playerCtl?.pose().pose === "sit") return true;
       if (!claim) {
+        const tz = shareTimezone() ? activeTimeZone() : undefined;
         desks.apply({
           deskId: desk.id,
           kind: desk.kind,
@@ -835,8 +1281,9 @@ loadPlate()
           name: identity.name,
           privacy: "open",
           since: Date.now(),
+          timezone: tz,
         });
-        room.sendClaim(desk.id);
+        room.sendClaim(desk.id, tz);
       }
       playerCtl?.goSit(desks.seat(desk));
       syncMacDesk();
@@ -861,6 +1308,17 @@ loadPlate()
       }
     });
 
+    rideFloor = (floor) => {
+      if (floor === viewFloor) return;
+      if (!openFloors.includes(floor)) {
+        status.textContent = "that floor is gone";
+        return;
+      }
+      pendingFloorRide = floor;
+      room.sendFloor(floor);
+      status.textContent = `riding to ${floorName(floor)}`;
+    };
+
     askClockOut = () => {
       const mine = desks.mine(identity.id);
       const desk = mine ? desks.get(mine.deskId) : undefined;
@@ -868,7 +1326,7 @@ loadPlate()
       showClockOutAsk({
         name: identity.name,
         hasDesk: Boolean(mine),
-        since: mine?.since,
+        since: shiftStartedAt ?? mine?.since,
         desk: desk ? desks.pretty(desk) : "",
       });
     };
@@ -880,8 +1338,6 @@ loadPlate()
       playerCtl?.goTo(spawn.x, spawn.y, true);
       const pose = playerCtl?.pose();
       if (pose) {
-        room.sendMove(pose.x, pose.y, pose.facing);
-        room.sendState(pose);
         const [wx, , wz] = toWorld(pose.x, pose.y, plateNow);
         centerCameraOn(wx, wz);
       }
@@ -890,9 +1346,6 @@ loadPlate()
 
     clockOut = (home = false) => {
       const mine = desks.mine(identity.id);
-      const desk = mine ? desks.get(mine.deskId) : undefined;
-      const since = mine?.since;
-      const deskLabel = desk ? desks.pretty(desk) : "";
       if (mine) {
         room.sendRelease();
         desks.release(mine.deskId);
@@ -902,10 +1355,19 @@ loadPlate()
       leaveArmed = false;
       syncMacDesk();
       paintFloorRoster();
-      if (home) goHome?.();
-      if (since) showClockOutDone(identity.name, since, deskLabel, home);
-      else if (home) dayEnd.hidden = true;
-      else dayEnd.hidden = true;
+      if (home) {
+        room.sendWhisperEnd();
+        macCtl?.endAllWhispers();
+        goHome?.();
+        shiftStartedAt = null;
+        dayEnd.hidden = true;
+        document.querySelector("#mac")?.classList.add("collapsed");
+        joinGate.hidden = false;
+        joinAuth.hidden = true;
+        joinActions.hidden = false;
+        return;
+      }
+      dayEnd.hidden = true;
     };
 
     const syncMacDesk = () => {
@@ -1047,6 +1509,9 @@ loadPlate()
     };
 
     const becomeGuest = async () => {
+      room.sendWhisperEnd();
+      macCtl?.endAllWhispers();
+      macCtl?.setChatAvailable(false);
       const mine = desks.mine(identity.id);
       if (mine) {
         room.sendRelease();
@@ -1084,6 +1549,8 @@ loadPlate()
         desks.rename(identity.id, name);
         room.sendProfile(name);
         mac.setName(name);
+        mac.renameSpeaker(identity.id, name);
+        worldChat?.setName(name);
         if (!identity.email) return true;
         const saved = await saveAccountName(name);
         return saved.ok;
@@ -1099,14 +1566,37 @@ loadPlate()
       },
       hasDesk: () => Boolean(desks.mine(identity.id)),
       signedIn: isSignedIn,
-      onChat: (text, channel) => {
-        if (!isSignedIn()) {
-          askAccount("Sign in to chat.");
-          return;
-        }
+      onInspectPerson: (peerId, name) => {
+        inspectPerson?.(peerId, name);
+      },
+      onWhisper: (text, toId) => {
         const pose = playerCtl?.pose();
         if (pose && poseInQuietZone(plate, pose)) return;
-        if (channel === "floor" && !desks.mine(identity.id)) return;
+        room.sendWhisper(toId, text);
+      },
+      onWhisperReply: (fromId, accept) => {
+        room.sendWhisperReply(fromId, accept);
+      },
+      onWhisperEnd: (peerId) => {
+        room.sendWhisperEnd(peerId);
+      },
+      onChatAvailable: (on) => {
+        chatAvailable.set(identity.id, on);
+        room.sendChatAvailable(on);
+        paintFloorRoster();
+      },
+      onShareTz: (on) => {
+        confReserve?.refresh();
+        paintConfBadges();
+        const mine = desks.mine(identity.id);
+        if (!mine) return;
+        mine.timezone = on ? activeTimeZone() : undefined;
+        desks.apply(mine);
+        room.sendTimezone(on ? activeTimeZone() : null);
+      },
+      onChat: (text, channel) => {
+        const pose = playerCtl?.pose();
+        if (pose && poseInQuietZone(plate, pose)) return;
         if (channel === "office") {
           const you = playerCtl?.pose();
           if (!you) return;
@@ -1116,14 +1606,14 @@ loadPlate()
           if (!here) return;
           const dest = officeChatTargets(here.id);
           if (worldChat?.sendChat(text, "office", dest, here.id)) {
-            mac.addChat(identity.name, text, true, "office", here.id);
+            mac.addChat(identity.name, text, true, "office", here.id, identity.id);
             return;
           }
           room.sendChat(text, "office");
           return;
         }
         if (worldChat?.sendChat(text, "floor", [])) {
-          mac.addChat(identity.name, text, true, "floor");
+          mac.addChat(identity.name, text, true, "floor", undefined, identity.id);
           return;
         }
         room.sendChat(text, "floor");
@@ -1222,7 +1712,11 @@ loadPlate()
         if (isMuted(id)) return;
         const you = playerCtl?.pose();
         if (you && poseInQuietZone(plate, you)) return;
-        mac.addChat(name, text, id === identity.address || id === identity.id, channel, deskId);
+        const fromPeer =
+          id === identity.address || id === identity.id
+            ? identity.id
+            : remotes.poses().find((pose) => pose.address === id)?.id ?? id;
+        mac.addChat(name, text, fromPeer === identity.id, channel, deskId, fromPeer);
       },
       onStatus: (text) => {
         status.textContent = text;
@@ -1305,12 +1799,9 @@ function simulate(dt: number) {
   }
   if (livePlate && playerCtl && promptCtl) {
     const pose = playerCtl.pose();
-    const here = kindAt(
-      livePlate,
-      pose.col ?? Math.floor(pose.x / livePlate.grid.cellSize),
-      pose.row ?? Math.floor(pose.y / livePlate.grid.cellSize),
-    );
-    const atElevator = here === "elevator";
+    const col = pose.col ?? Math.floor(pose.x / livePlate.grid.cellSize);
+    const row = pose.row ?? Math.floor(pose.y / livePlate.grid.cellSize);
+    const atElevator = inElevator(livePlate, col, row);
     if (pendingKnock && !playerCtl.moving()) {
       const desk = pendingKnock;
       pendingKnock = null;
@@ -1378,22 +1869,58 @@ function fillTimesheet(since: number, desk: string) {
   dayEndDesk.textContent = desk || "—";
 }
 
+function paintElevatorFloors() {
+  dayEndFloors.innerHTML = "";
+  const others = openFloors.filter((floor) => floor !== viewFloor);
+  dayEndFloors.hidden = others.length === 0;
+  const labeled = openFloors.length > 1 || viewFloor > FIRST_FLOOR;
+  dayEndTitle.textContent = labeled ? `Elevator · Floor ${viewFloor}` : "Elevator";
+  for (const floor of others) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    if (floor === viewFloor + 1) btn.textContent = `Next floor (${floor})`;
+    else if (floor === viewFloor - 1) btn.textContent = floor === FIRST_FLOOR ? "Go down to floor 1" : `Go to floor ${floor}`;
+    else btn.textContent = `Go to floor ${floor}`;
+    btn.addEventListener("click", () => {
+      dayEnd.hidden = true;
+      leaveArmed = false;
+      rideFloor?.(floor);
+    });
+    dayEndFloors.appendChild(btn);
+  }
+}
+
 function showClockOutAsk(opts: { name: string; hasDesk: boolean; since?: number; desk?: string }) {
   dayEndMode = "ask";
-  if (opts.hasDesk && opts.since) {
-    dayEndHello.textContent = `${opts.name}, ready to go?`;
+  const others = openFloors.filter((floor) => floor !== viewFloor);
+  const moreFloors = others.length > 0 || viewFloor > FIRST_FLOOR;
+  const next = others.find((floor) => floor > viewFloor);
+  dayEndHello.textContent = moreFloors && viewFloor > FIRST_FLOOR
+    ? `${opts.name}, ${floorName(viewFloor)}.`
+    : opts.hasDesk
+      ? `${opts.name}, ready to go?`
+      : `${opts.name}, head home?`;
+  if (opts.since) {
     fillTimesheet(opts.since, opts.desk ?? "");
     dayEndWell.hidden = false;
-    dayEndCopy.textContent =
-      "Leave office frees your desk and you stay on the floor. End shift clocks you out and takes you outside — come back later without closing the tab.";
-    dayEndGo.hidden = false;
   } else {
-    dayEndHello.textContent = `${opts.name}, head home?`;
     dayEndWell.hidden = true;
-    dayEndCopy.textContent =
-      "End shift takes you outside. Stay keeps you on the floor. You can come back through the elevator without closing the tab.";
-    dayEndGo.hidden = true;
   }
+  dayEndGo.hidden = !opts.hasDesk;
+  if (opts.hasDesk) {
+    dayEndCopy.textContent = moreFloors
+      ? next && viewFloor === FIRST_FLOOR
+        ? `${floorName(next)} is open. Ride up, leave your office, or end your shift.`
+        : "Ride to another floor, leave your office, or end your shift."
+      : "Leave office frees your desk and you stay on the floor. End shift clocks you out and takes you outside — come back later without closing the tab.";
+  } else {
+    dayEndCopy.textContent = moreFloors
+      ? next && viewFloor === FIRST_FLOOR
+        ? `${floorName(next)} is open. Ride up, or end your shift.`
+        : "Ride to another floor, or end your shift and leave."
+      : "You're on the clock even without a desk. End shift clocks you out and takes you outside — come back later without closing the tab.";
+  }
+  paintElevatorFloors();
   dayEndHome.hidden = false;
   dayEndStay.hidden = false;
   dayEndOk.hidden = true;
@@ -1407,7 +1934,9 @@ function showClockOutDone(name: string, since: number, desk: string, home: boole
   dayEndGo.hidden = true;
   dayEndHome.hidden = true;
   dayEndStay.hidden = true;
+  dayEndFloors.hidden = true;
   dayEndOk.hidden = false;
+  dayEndTitle.textContent = "Elevator";
   if (home) {
     dayEndHello.textContent = `${name}, done for the day.`;
     dayEndCopy.textContent = "You're outside. Come back through the elevator when you want another shift.";
@@ -1427,15 +1956,7 @@ function dismissClockOutAsk() {
 }
 
 dayEndGo.addEventListener("click", () => clockOut?.(false));
-dayEndHome.addEventListener("click", () => {
-  if (dayEndGo.hidden) {
-    leaveArmed = false;
-    goHome?.();
-    dayEnd.hidden = true;
-    return;
-  }
-  clockOut?.(true);
-});
+dayEndHome.addEventListener("click", () => clockOut?.(true));
 dayEndStay.addEventListener("click", dismissClockOutAsk);
 dayEndOk.addEventListener("click", () => {
   dayEnd.hidden = true;
@@ -1458,6 +1979,7 @@ function paintFloorRoster() {
       time: workTime(row.since),
       self: row.peerId === selfId,
       blocked: blocked.has(row.peerId),
+      chatAvailable: chatAvailable.get(row.peerId) === true,
     })),
   );
 }
@@ -1485,7 +2007,7 @@ function updateOfficePeek(desk: Desk | null, kind?: string) {
     return;
   }
   peekName.textContent = "Vacant";
-  peekMeta.textContent = desksCtl?.mine(selfId) ? "You already have a desk" : "Click to start a shift";
+  peekMeta.textContent = desksCtl?.mine(selfId) ? "You already have a desk" : "Click to claim · earns XP";
 }
 
 function tick(render: boolean) {
@@ -1512,6 +2034,13 @@ function tick(render: boolean) {
     const col = hit?.object.userData.col as number | undefined;
     const row = hit?.object.userData.row as number | undefined;
     const desk = kind && col !== undefined && row !== undefined ? desksCtl?.atCell(col, row) : null;
+    const personHover = remotesCtl?.pick(camera, pointer);
+    if (personHover) {
+      canvas.style.cursor = "pointer";
+      status.textContent = personHover.name;
+    } else {
+      canvas.style.cursor = "";
+    }
     const sitHover = desksCtl?.pickSeat(camera, pointer);
     const sitClaim = sitHover?.desk ? desksCtl?.claimOf(sitHover.desk.id) : undefined;
     const canSit = Boolean(
@@ -1524,7 +2053,9 @@ function tick(render: boolean) {
               !blocked.has(sitClaim.peerId) &&
               !blockedBy.has(sitClaim.peerId))))),
     );
-    if (canSit && sitHover) {
+    if (personHover) {
+      /* whisper hover already set */
+    } else if (canSit && sitHover) {
       status.textContent =
         sitHover.type === "beanbag"
           ? "beanbag · sit"

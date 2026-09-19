@@ -17,7 +17,26 @@ export type RoomHandlers = {
   identity: Identity;
   getToken?: () => string;
   getPose: () => Pose;
-  onWelcome: (peers: Peer[], self: Peer, claims: Claim[], blocked?: string[], blockedBy?: string[], officeAds?: OfficeAd[]) => void;
+  onWelcome: (
+    peers: Peer[],
+    self: Peer,
+    claims: Claim[],
+    blocked?: string[],
+    blockedBy?: string[],
+    officeAds?: OfficeAd[],
+    floor?: number,
+    maxFloor?: number,
+    floors?: number[],
+  ) => void;
+  onFloors?: (floor: number, maxFloor: number, floors: number[]) => void;
+  onFloorView?: (view: {
+    floor: number;
+    maxFloor: number;
+    floors: number[];
+    peers: Peer[];
+    claims: Claim[];
+    officeAds?: OfficeAd[];
+  }) => void;
   onOfficeAd?: (deskId: string, peerId: string, ad: OfficeAd | null) => void;
   onJoin: (peer: Peer) => void;
   onLeave: (id: string) => void;
@@ -30,6 +49,11 @@ export type RoomHandlers = {
   onCancelReserve?: (id: string) => void;
   onRelease: (deskId: string, peerId: string) => void;
   onChat?: (id: string, name: string, text: string, channel: ChatChannel, deskId?: string) => void;
+  onChatAvailable?: (id: string, on: boolean) => void;
+  onWhisperRequest?: (fromId: string, fromName: string, text?: string) => void;
+  onWhisperOpen?: (peerId: string, name: string, text?: string) => void;
+  onWhisper?: (id: string, name: string, text: string, peerId: string) => void;
+  onWhisperEnd?: (peerId: string, reason?: "left" | "ended" | "declined") => void;
   onKnock?: (deskId: string, fromId: string, fromName: string) => void;
   onKnockReply?: (fromId: string, accept: boolean, deskId: string) => void;
   onBoot?: (deskId: string, peerId: string) => void;
@@ -82,8 +106,35 @@ export function connectRoom(opts: RoomHandlers) {
   const handle = (msg: ServerMsg) => {
     if (msg.type === "welcome") {
       peers = 1 + msg.peers.length;
-      opts.onWelcome(msg.peers, msg.self, msg.claims ?? [], msg.blocked ?? [], msg.blockedBy ?? [], msg.officeAds);
+      opts.onWelcome(
+        msg.peers,
+        msg.self,
+        msg.claims ?? [],
+        msg.blocked ?? [],
+        msg.blockedBy ?? [],
+        msg.officeAds,
+        msg.floor,
+        msg.maxFloor,
+        msg.floors,
+      );
       opts.onReservations?.(msg.reservations ?? []);
+      status();
+      return;
+    }
+    if (msg.type === "floors") {
+      opts.onFloors?.(msg.floor, msg.maxFloor, msg.floors);
+      return;
+    }
+    if (msg.type === "floor") {
+      peers = 1 + msg.peers.length;
+      opts.onFloorView?.({
+        floor: msg.floor,
+        maxFloor: msg.maxFloor,
+        floors: msg.floors,
+        peers: msg.peers,
+        claims: msg.claims ?? [],
+        officeAds: msg.officeAds,
+      });
       status();
       return;
     }
@@ -122,6 +173,26 @@ export function connectRoom(opts: RoomHandlers) {
     }
     if (msg.type === "chat") {
       opts.onChat?.(msg.id, msg.name, msg.text, msg.channel ?? "floor", msg.deskId);
+      return;
+    }
+    if (msg.type === "chat-available") {
+      opts.onChatAvailable?.(msg.id, msg.on);
+      return;
+    }
+    if (msg.type === "whisper-request") {
+      opts.onWhisperRequest?.(msg.fromId, msg.fromName, msg.text);
+      return;
+    }
+    if (msg.type === "whisper-open") {
+      opts.onWhisperOpen?.(msg.peerId, msg.name, msg.text);
+      return;
+    }
+    if (msg.type === "whisper") {
+      opts.onWhisper?.(msg.id, msg.name, msg.text, msg.peerId);
+      return;
+    }
+    if (msg.type === "whisper-end") {
+      opts.onWhisperEnd?.(msg.peerId, msg.reason);
       return;
     }
     if (msg.type === "knock") {
@@ -218,8 +289,11 @@ export function connectRoom(opts: RoomHandlers) {
     sendProfile(name: string) {
       send({ type: "profile", name });
     },
-    sendClaim(deskId: string) {
-      send({ type: "claim", deskId });
+    sendClaim(deskId: string, timezone?: string) {
+      send({ type: "claim", deskId, timezone });
+    },
+    sendTimezone(tz: string | null) {
+      send({ type: "timezone", tz });
     },
     sendReserve(roomId: string, day: string, startMin: number, durationMin: 30 | 60) {
       send({ type: "reserve", roomId, day, startMin, durationMin });
@@ -236,6 +310,18 @@ export function connectRoom(opts: RoomHandlers) {
     sendChat(text: string, channel: ChatChannel = "floor") {
       send({ type: "chat", text, channel });
     },
+    sendChatAvailable(on: boolean) {
+      send({ type: "chat-available", on });
+    },
+    sendWhisper(toId: string, text = "") {
+      send({ type: "whisper", toId, text });
+    },
+    sendWhisperReply(fromId: string, accept: boolean) {
+      send({ type: "whisper-reply", fromId, accept });
+    },
+    sendWhisperEnd(peerId?: string) {
+      send({ type: "whisper-end", peerId });
+    },
     sendKnock(deskId: string) {
       send({ type: "knock", deskId });
     },
@@ -250,6 +336,9 @@ export function connectRoom(opts: RoomHandlers) {
     },
     sendOfficeAd(enabled: boolean) {
       send({ type: "office-ad", enabled });
+    },
+    sendFloor(floor: number) {
+      send({ type: "floor", floor });
     },
     identify() {
       hello();

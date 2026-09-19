@@ -34,6 +34,7 @@ export function attachRemoteHumans(opts: {
 }) {
   const { plate, root, colliderRoots } = opts;
   const remotes = new Map<string, Remote>();
+  const pickRay = new THREE.Raycaster();
 
   const spawn = (peer: Peer) => {
     const existing = remotes.get(peer.id);
@@ -62,6 +63,9 @@ export function attachRemoteHumans(opts: {
       if (!remote) return;
       remote.group.parent?.remove(remote.group);
       remotes.delete(id);
+    },
+    clear() {
+      for (const id of [...remotes.keys()]) this.remove(id);
     },
     walkTo(id: string, x: number, y: number) {
       const remote = remotes.get(id);
@@ -129,6 +133,32 @@ export function attachRemoteHumans(opts: {
         col: remote.avatar.col,
         row: remote.avatar.row,
       }));
+    },
+    pick(camera: THREE.Camera, pointer: THREE.Vector2) {
+      pickRay.setFromCamera(pointer, camera);
+      const groups = [...remotes.values()].map((remote) => remote.group);
+      const hits = pickRay.intersectObjects(groups, true);
+      for (const hit of hits) {
+        let node: THREE.Object3D | null = hit.object;
+        while (node) {
+          const avatar = node.userData?.avatar as Avatar | undefined;
+          if (avatar?.id) {
+            const remote = remotes.get(avatar.id);
+            if (remote) {
+              return {
+                id: remote.peer.id,
+                name: remote.peer.name,
+                x: remote.avatar.x,
+                y: remote.avatar.y,
+                distance: hit.distance,
+              };
+            }
+            break;
+          }
+          node = node.parent;
+        }
+      }
+      return null;
     },
     rename(id: string, name: string) {
       const remote = remotes.get(id);

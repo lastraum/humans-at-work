@@ -51,7 +51,8 @@ body.editing #edit-toggle {
   border-color: #5a7aaa;
 }
 
-#zoom-readout {
+#zoom-readout,
+#floor-readout {
   padding: 4px 8px;
   background: rgba(16, 14, 28, 0.88);
   border: 1px solid #4a4568;
@@ -394,7 +395,8 @@ body.editing #editor-dock {
 }
 
 #day-end,
-#claim-shift {
+#claim-shift,
+#join-gate {
   position: fixed;
   inset: 0;
   z-index: 8;
@@ -405,12 +407,14 @@ body.editing #editor-dock {
 }
 
 #day-end[hidden],
-#claim-shift[hidden] {
+#claim-shift[hidden],
+#join-gate[hidden] {
   display: none;
 }
 
 #day-end-card,
-#claim-shift-card {
+#claim-shift-card,
+#join-gate-card {
   width: 360px;
   background: #dddddd;
   color: #111;
@@ -420,19 +424,37 @@ body.editing #editor-dock {
   font-size: 12px;
 }
 
+#join-gate-card {
+  width: 400px;
+}
+
 #day-end-hello,
-#claim-shift-hello {
+#claim-shift-hello,
+#join-hello {
   margin: 0 0 10px;
   font-size: 13px;
 }
 
 #claim-shift-copy,
-#day-end-copy {
+#day-end-copy,
+#join-copy {
   margin: 8px 0 0;
 }
 
+#join-copy p,
+#claim-shift-copy p {
+  margin: 0 0 8px;
+  line-height: 1.45;
+}
+
+#join-copy p:last-child,
+#claim-shift-copy p:last-child {
+  margin-bottom: 0;
+}
+
 .mac-floor-list {
-  max-height: 168px;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 4px 8px;
 }
@@ -488,6 +510,17 @@ body.editing #editor-dock {
   font-weight: 700;
 }
 
+.day-end-floors {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 8px;
+}
+
+.day-end-floors[hidden] {
+  display: none;
+}
+
 .day-end-row {
   display: flex;
   justify-content: space-between;
@@ -529,7 +562,7 @@ body.editing #editor-dock {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: 360px;
+  width: 520px;
   pointer-events: none;
 }
 
@@ -537,7 +570,10 @@ body.editing #mac-stack {
   display: none;
 }
 
-#mac-peek {
+#mac-peek,
+#person-card {
+  width: 360px;
+  align-self: flex-end;
   pointer-events: auto;
   background: #dddddd;
   color: #111;
@@ -547,14 +583,44 @@ body.editing #mac-stack {
   font-size: 12px;
 }
 
+#person-card[hidden] {
+  display: none;
+}
+
 #mac-peek-name {
   font-weight: 700;
   font-size: 14px;
 }
 
-#mac-peek-meta {
+#mac-peek-meta,
+#person-card-meta {
   margin-top: 4px;
   font-size: 11px;
+}
+
+#person-card-name {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.person-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.person-card-actions[hidden] {
+  display: none;
+}
+
+.person-card-actions button {
+  flex: 1;
+  padding: 3px 8px;
+  background: #ddd;
+  border: 1px solid #000;
+  box-shadow: inset -1px -1px 0 #888, inset 1px 1px 0 #fff;
+  font: inherit;
+  cursor: pointer;
 }
 
 #mac {
@@ -622,6 +688,24 @@ body.editing #mac-stack {
   padding: 8px;
 }
 
+#mac .mac-body {
+  display: flex;
+  flex-direction: column;
+  height: min(50vh, calc(100vh - 72px));
+  box-sizing: border-box;
+}
+
+.mac-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.mac-panel:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+}
+
 #mac-alert {
   position: absolute;
   inset: 8px;
@@ -668,8 +752,15 @@ body.editing #mac-stack {
 #day-end-go,
 #day-end-home,
 #day-end-stay,
+#day-end-floors button,
 #claim-shift-go,
-#claim-shift-no {
+#claim-shift-no,
+#join-enter,
+#join-guest,
+#join-signin,
+#join-email-send,
+#join-email-verify,
+#join-back {
   padding: 3px 10px;
   background: #ddd;
   border: 1px solid #000;
@@ -687,8 +778,15 @@ body.editing #mac-stack {
 #day-end-go,
 #day-end-home,
 #day-end-stay,
+#day-end-floors button,
 #claim-shift-go,
-#claim-shift-no {
+#claim-shift-no,
+#join-enter,
+#join-guest,
+#join-signin,
+#join-email-send,
+#join-email-verify,
+#join-back {
   margin-top: 10px;
   width: 100%;
 }
@@ -723,11 +821,13 @@ body.editing #mac-stack {
 
 .mac-icons {
   display: flex;
+  flex: 0 0 auto;
   gap: 5px;
   margin-bottom: 8px;
 }
 
 .mac-icons button {
+  position: relative;
   flex: 1;
   min-width: 0;
   padding: 6px 2px;
@@ -737,6 +837,33 @@ body.editing #mac-stack {
   font: inherit;
   font-size: 11px;
   cursor: pointer;
+}
+
+.mac-badge {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  background: #c00;
+  color: #fff;
+  font-size: 9px;
+  line-height: 14px;
+  border-radius: 7px;
+  box-sizing: border-box;
+}
+
+.mac-tab-badge {
+  display: inline-block;
+  min-width: 12px;
+  padding: 0 3px;
+  margin-left: 2px;
+  background: #c00;
+  color: #fff;
+  font-size: 9px;
+  line-height: 12px;
+  border-radius: 6px;
 }
 
 .mac-icons button.on {
@@ -877,13 +1004,15 @@ body.editing #mac-stack {
 
 .mac-chat-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   margin-bottom: 6px;
 }
 
 .mac-chat-tabs button {
-  flex: 1;
-  padding: 3px 6px;
+  flex: 1 1 22%;
+  padding: 3px 4px;
+  font-size: 11px;
   background: #ddd;
   border: 1px solid #000;
   box-shadow: inset -1px -1px 0 #888, inset 1px 1px 0 #fff;
@@ -904,6 +1033,7 @@ body.editing #mac-stack {
 
 #mac-chat-form {
   display: flex;
+  flex: 0 0 auto;
   gap: 4px;
   margin-top: 6px;
 }
@@ -918,18 +1048,207 @@ body.editing #mac-stack {
 }
 
 .mac-chat-log {
-  height: 118px;
+  flex: 1;
+  min-height: 0;
+  height: auto;
   overflow: auto;
   font-size: 11px;
 }
 
 .mac-chat-row {
-  margin: 0 0 4px;
+  margin: 0 0 8px;
   line-height: 1.3;
 }
 
-.mac-chat-row.self b {
-  text-decoration: underline;
+.mac-chat-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 0 2px;
+}
+
+.mac-chat-head b {
+  font-size: 11px;
+  color: #b22;
+}
+
+.mac-chat-time {
+  font-size: 10px;
+  color: #666;
+}
+
+.mac-chat-bubble {
+  margin: 2px 0 0 8px;
+  padding: 4px 7px;
+  max-width: 92%;
+  background: #c5d4ea;
+  border: 1px solid #8aa0c0;
+  color: #111;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mac-chat-row.self .mac-chat-head b {
+  color: #2455c0;
+  text-decoration: none;
+}
+
+.mac-chat-row.self .mac-chat-bubble {
+  background: #e8b49a;
+  border-color: #c48a6a;
+}
+
+.mac-chat-main {
+  display: flex;
+  flex: 1;
+  gap: 8px;
+  align-items: stretch;
+  min-height: 0;
+}
+
+.mac-chat-stage {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.mac-whisper-people {
+  display: flex;
+  flex: 0 0 148px;
+  flex-direction: column;
+  width: 148px;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid #000;
+  background: #fff;
+}
+
+.mac-whisper-people[hidden] {
+  display: none;
+}
+
+.mac-whisper-empty {
+  padding: 8px 6px;
+  font-size: 11px;
+  color: #666;
+}
+
+.mac-whisper-thread {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 6px;
+  border-bottom: 1px dotted #888;
+}
+
+.mac-whisper-thread:last-child {
+  border-bottom: 0;
+}
+
+.mac-whisper-thread.on {
+  background: #000;
+  color: #fff;
+}
+
+.mac-whisper-thread-who {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mac-whisper-thread-who b {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.mac-whisper-thread-who span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  opacity: 0.75;
+}
+
+.mac-whisper-thread.on .mac-whisper-end {
+  background: #ddd;
+  color: #000;
+}
+
+.mac-whisper-end {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  font-size: 10px;
+  background: #ddd;
+  border: 1px solid #000;
+  box-shadow: inset -1px -1px 0 #888, inset 1px 1px 0 #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.mac-request-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px dotted #888;
+}
+
+.mac-request-row:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.mac-request-copy {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.mac-request-copy b {
+  display: inline;
+}
+
+.mac-request-btns {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+
+.mac-request-btns button,
+.mac-floor-whisper {
+  padding: 1px 6px;
+  font-size: 10px;
+  background: #ddd;
+  border: 1px solid #000;
+  box-shadow: inset -1px -1px 0 #888, inset 1px 1px 0 #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.mac-floor-whisper:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 #cam-pad {

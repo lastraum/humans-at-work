@@ -1,9 +1,11 @@
 import * as THREE from "three";
-import { fromWorld } from "./coords";
+import { fromWorld, SCALE } from "./coords";
+import { localPlateFor } from "./createOffice";
 import { setHingedDoorOpen } from "./createPlate";
+import { applyItemTransform } from "./loadFurniture";
 import { applyOfficeAd } from "./officeAds";
 import { clampPrivacy, type Claim, type DeskKind, type Privacy } from "./protocol";
-import type { FloorPlate, OfficeInstance } from "./types";
+import type { FloorPlate, FurnitureItem, OfficeInstance } from "./types";
 
 export type Desk = {
   id: string;
@@ -83,12 +85,13 @@ export function furnitureSeat(
   plate: FloorPlate,
   click?: THREE.Vector3,
   roomRot = 0,
+  facingDeg?: number,
 ) {
   node.updateWorldMatrix(true, true);
   const box = new THREE.Box3().setFromObject(node);
   const center = box.getCenter(new THREE.Vector3());
   const item = node.userData.item as { facing?: number; type?: string };
-  const facing = sitFacingOf(item.facing ?? 0, roomRot, item.type ?? "");
+  const facing = sitFacingOf(facingDeg ?? item.facing ?? 0, roomRot, item.type ?? "");
   const rad = (facing * Math.PI) / 180;
   if (click && isCouchLike(item.type ?? "")) {
     const alongX = Math.sin(rad + Math.PI / 2);
@@ -111,9 +114,17 @@ export function furnitureSeat(
   return { x: canvas.x, y: canvas.y, facing };
 }
 
-export function chairSeat(group: THREE.Object3D, inst: OfficeInstance, plate: FloorPlate) {
+export function chairSeat(
+  group: THREE.Object3D,
+  inst: OfficeInstance,
+  plate: FloorPlate,
+  occupied = false,
+) {
   const chair = chairNode(group);
-  if (chair) return furnitureSeat(chair, plate, undefined, inst.rot ?? 0);
+  const item = chair?.userData.item as FurnitureItem | undefined;
+  const facing =
+    occupied && item?.occupied?.facing != null ? item.occupied.facing : item?.facing;
+  if (chair) return furnitureSeat(chair, plate, undefined, inst.rot ?? 0, facing);
   const cell = plate.grid.cellSize;
   return {
     x: inst.col * cell + ((inst.cols ?? 1) * cell) / 2,
@@ -122,11 +133,17 @@ export function chairSeat(group: THREE.Object3D, inst: OfficeInstance, plate: Fl
   };
 }
 
-const VACANT = { color: 0x15202c, emissive: 0x05080c, intensity: 0.12, opacity: 0.62 };
+const VACANT = { color: 0x050608, emissive: 0x000000, intensity: 0, opacity: 0.96 };
 const OCCUPIED = { color: 0xffd7a0, emissive: 0xff9a3a, intensity: 0.85, opacity: 0.42 };
 const FOCUS = { color: 0x121820, emissive: 0x05080c, intensity: 0.06, opacity: 0.82 };
 
-function drawDoorPlate(canvas: HTMLCanvasElement, name: string) {
+function zoneCity(tz?: string) {
+  if (!tz) return "";
+  const city = tz.split("/").pop()?.replace(/_/g, " ") ?? "";
+  return city;
+}
+
+function drawDoorPlate(canvas: HTMLCanvasElement, name: string, zone?: string) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const w = canvas.width;
@@ -141,8 +158,16 @@ function drawDoorPlate(canvas: HTMLCanvasElement, name: string) {
   ctx.fillStyle = "#f3e6c8";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.font = "700 48px ui-sans-serif, system-ui, sans-serif";
-  ctx.fillText(name.slice(0, 16).toUpperCase(), w / 2, h / 2 + 2);
+  if (zone) {
+    ctx.font = "700 48px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText(name.slice(0, 16).toUpperCase(), w / 2, h * 0.38);
+    ctx.font = "700 40px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillStyle = "#f3e6c8";
+    ctx.fillText(zone, w / 2, h * 0.7);
+  } else {
+    ctx.font = "700 52px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText(name.slice(0, 16).toUpperCase(), w / 2, h / 2 + 2);
+  }
 }
 
 function windowGlasses(group: THREE.Object3D) {
@@ -159,6 +184,32 @@ function tintGlass(glass: THREE.Mesh, look: typeof VACANT) {
   mat.emissive.setHex(look.emissive);
   mat.emissiveIntensity = look.intensity;
   mat.opacity = look.opacity;
+}
+
+function ensureVacantShade(desk: Desk, dark: boolean, cellSize: number) {
+  let shade = desk.group.getObjectByName("vacant-shade") as THREE.Mesh | undefined;
+  if (!shade) {
+    const cols = desk.instance.cols ?? 1;
+    const rows = desk.instance.rows ?? 1;
+    const w = Math.max(cols * cellSize * SCALE - 0.12, 0.4);
+    const d = Math.max(rows * cellSize * SCALE - 0.12, 0.4);
+    shade = new THREE.Mesh(
+      new THREE.PlaneGeometry(w, d),
+      new THREE.MeshBasicMaterial({
+        color: 0x04050a,
+        transparent: true,
+        opacity: 0.48,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+    );
+    shade.name = "vacant-shade";
+    shade.rotation.x = -Math.PI / 2;
+    shade.position.y = 0.98;
+    shade.renderOrder = 3;
+    desk.group.add(shade);
+  }
+  shade.visible = dark;
 }
 
 const SCREEN_GEO = new THREE.PlaneGeometry(1, 1);
@@ -282,39 +333,49 @@ function officeDoor(group: THREE.Object3D): THREE.Object3D | null {
   return found;
 }
 
-function ensureDoorPlate(door: THREE.Object3D) {
-  let plate = door.getObjectByName("door-plate") as THREE.Mesh | undefined;
-  if (!plate) {
-    const canvas = document.createElement("canvas");
-    canvas.width = 512;
-    canvas.height = 96;
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    plate = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.78, 0.2),
-      new THREE.MeshBasicMaterial({
-        map: tex,
-        transparent: true,
-        depthWrite: false,
-        side: THREE.FrontSide,
-      }),
-    );
-    plate.name = "door-plate";
-    plate.renderOrder = 5;
-    plate.visible = false;
-    plate.userData.canvas = canvas;
-    plate.userData.texture = tex;
-    const frame = door.children[0] ?? door;
-    frame.add(plate);
-  } else {
-    plate.geometry.dispose();
-    plate.geometry = new THREE.PlaneGeometry(0.78, 0.2);
-    (plate.material as THREE.MeshBasicMaterial).side = THREE.FrontSide;
+function ensureDoorPlate(door: THREE.Object3D, withZone = false) {
+  const planeW = 0.78;
+  const planeH = withZone ? 0.24 : 0.18;
+  const canvasH = withZone ? 180 : 110;
+  const leftovers: THREE.Object3D[] = [];
+  door.traverse((node) => {
+    if (node.name === "door-plate") leftovers.push(node);
+  });
+  for (const node of leftovers) {
+    node.parent?.remove(node);
+    const mesh = node as THREE.Mesh;
+    mesh.geometry?.dispose();
+    const tex = mesh.userData.texture as THREE.CanvasTexture | undefined;
+    tex?.dispose();
+    const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
+    if (Array.isArray(mat)) for (const m of mat) m.dispose();
+    else mat?.dispose();
   }
+  const canvas = document.createElement("canvas");
+  canvas.width = 640;
+  canvas.height = canvasH;
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const plate = new THREE.Mesh(
+    new THREE.PlaneGeometry(planeW, planeH),
+    new THREE.MeshBasicMaterial({
+      map: tex,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.FrontSide,
+    }),
+  );
+  plate.name = "door-plate";
+  plate.renderOrder = 5;
+  plate.visible = false;
+  plate.userData.canvas = canvas;
+  plate.userData.texture = tex;
+  const frame = door.children[0] ?? door;
+  frame.add(plate);
   const edge = String(door.userData.doorEdge ?? "n");
   const alongX = Boolean(door.userData.alongX ?? (edge === "n" || edge === "s"));
-  const out = 0.14;
-  plate.position.set(0, 1.01, 0);
+  const out = 0.13;
+  plate.position.set(0, 1.09, 0);
   plate.rotation.set(0, 0, 0);
   if (alongX) {
     plate.position.z = edge === "n" ? -out : out;
@@ -346,6 +407,7 @@ export function attachDesks(opts: {
   const desks = new Map<string, Desk>();
   const claims = new Map<string, Claim>();
   const fixtures = new Map<string, string>();
+  let fixturesOn = true;
   const cell = plate.grid.cellSize;
   const seatRay = new THREE.Raycaster();
 
@@ -374,19 +436,33 @@ export function attachDesks(opts: {
 
   const claimAt = (deskId: string) => claims.get(deskId);
 
+  const poseDeskChair = (desk: Desk, occupied: boolean) => {
+    const chair = chairNode(desk.group);
+    const item = chair?.userData.item as FurnitureItem | undefined;
+    if (!chair || !item || item.type !== "chair") return;
+    const pose =
+      occupied && item.occupied
+        ? { x: item.occupied.x, y: item.occupied.y, facing: item.occupied.facing ?? item.facing }
+        : { x: item.x, y: item.y, facing: item.facing };
+    applyItemTransform(chair, { ...item, ...pose }, localPlateFor(plate, desk.instance.cols ?? 1, desk.instance.rows ?? 1));
+    desk.seat = chairSeat(desk.group, desk.instance, plate, occupied);
+  };
+
   const paint = (desk: Desk) => {
     const oldSign = desk.group.getObjectByName("desk-sign");
     if (oldSign) oldSign.visible = false;
     desk.group.traverse((node) => {
       if (node.name === "window-name") node.visible = false;
     });
-    const fixture = fixtures.get(desk.id);
+    const fixture = fixturesOn ? fixtures.get(desk.id) : undefined;
     const claim = claimAt(desk.id);
     const occupied = Boolean(claim || fixture);
+    poseDeskChair(desk, occupied);
     const privacy: Privacy = claim ? clampPrivacy(claim.privacy) : "open";
     const look = !occupied ? VACANT : privacy === "focus" ? FOCUS : OCCUPIED;
     const name = occupied ? (claim?.name ?? fixture ?? "") : "";
     for (const glass of windowGlasses(desk.group)) tintGlass(glass, look);
+    ensureVacantShade(desk, !occupied, cell);
     const adUrl =
       claim?.kind === "office" && claim.officeAd?.enabled && claim.officeAd.url
         ? claim.officeAd.url
@@ -396,7 +472,7 @@ export function attachDesks(opts: {
     if (lamp) {
       const light = ensureLampLight(lamp);
       light.visible = occupied;
-      light.intensity = !occupied ? 0 : privacy === "focus" ? 0.85 : 1.55;
+      light.intensity = !occupied ? 0 : privacy === "focus" ? 0.9 : 1.7;
     }
     const computer = computerNode(desk.group);
     if (computer) {
@@ -408,10 +484,15 @@ export function attachDesks(opts: {
       const open = occupied && privacy === "open";
       setHingedDoorOpen(door, open ? 0.38 : 0);
       door.updateWorldMatrix(true, true);
-      const plate = ensureDoorPlate(door);
+      const zone = zoneCity(claim?.timezone);
+      const plate = ensureDoorPlate(door, Boolean(zone));
       if (plate) {
         if (occupied && name) {
-          drawDoorPlate(plate.userData.canvas as HTMLCanvasElement, name);
+          drawDoorPlate(
+            plate.userData.canvas as HTMLCanvasElement,
+            name,
+            zone,
+          );
           (plate.userData.texture as THREE.CanvasTexture).needsUpdate = true;
           plate.visible = true;
         } else {
@@ -437,7 +518,8 @@ export function attachDesks(opts: {
       return inDesk(pose, desk.instance, cell);
     },
     seat(desk: Desk) {
-      const next = chairSeat(desk.group, desk.instance, plate);
+      const occupied = Boolean(claimAt(desk.id) || (fixturesOn && fixtures.get(desk.id)));
+      const next = chairSeat(desk.group, desk.instance, plate, occupied);
       desk.seat = next;
       return next;
     },
@@ -505,7 +587,13 @@ export function attachDesks(opts: {
           };
         })
         .sort((a, b) => a.name.localeCompare(b.name)),
-    fixture: (id: string) => fixtures.get(id),
+    fixture: (id: string) => (fixturesOn ? fixtures.get(id) : undefined),
+    setViewFloor(floor: number) {
+      const next = floor <= 1;
+      if (next === fixturesOn) return;
+      fixturesOn = next;
+      for (const desk of desks.values()) paint(desk);
+    },
     atCell(col: number, row: number) {
       for (const desk of desks.values()) {
         const inst = desk.instance;
@@ -566,7 +654,7 @@ export function attachDesks(opts: {
     },
     label(desk: Desk) {
       const claim = claimAt(desk.id);
-      const fixture = fixtures.get(desk.id);
+      const fixture = fixturesOn ? fixtures.get(desk.id) : undefined;
       if (claim) return claim.name;
       if (fixture) return fixture;
       return "empty";

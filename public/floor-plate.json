@@ -25,9 +25,9 @@
     "K": "kitchen",
     "C": "conference",
     "R": "recreation",
+    "L": "library",
     "w": "sidewalk",
-    "p": "parking",
-    "L": "library"
+    "p": "parking"
   },
   "cells": [
     "CCxxxxLL",
@@ -1013,9 +1013,14 @@
         "_uid": "tpl_chair",
         "type": "chair",
         "id": "chair",
-        "x": 35,
-        "y": 70.9,
-        "facing": 180
+        "x": 33.2,
+        "y": 93.7,
+        "facing": 90,
+        "occupied": {
+          "x": 35.9,
+          "y": 89.7,
+          "facing": 270
+        }
       },
       {
         "_uid": "tpl_pc",
@@ -1343,9 +1348,14 @@
           "_uid": "office_04_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_04_pc_2",
@@ -1547,9 +1557,14 @@
           "_uid": "office_05_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_05_pc_2",
@@ -1751,9 +1766,14 @@
           "_uid": "office_06_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_06_pc_2",
@@ -1955,9 +1975,14 @@
           "_uid": "office_07_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_07_pc_2",
@@ -2159,9 +2184,14 @@
           "_uid": "office_09_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_09_pc_2",
@@ -2363,9 +2393,14 @@
           "_uid": "office_10_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_10_pc_2",
@@ -2497,8 +2532,8 @@
         {
           "_uid": "cushion_chair_mtto0gy5_336",
           "type": "cushion_chair",
-          "x": 40.7,
-          "y": 57.2,
+          "x": 40.4,
+          "y": 56.7,
           "w": 11,
           "h": 11,
           "facing": 0,
@@ -2567,9 +2602,14 @@
           "_uid": "office_11_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_11_pc_2",
@@ -2771,9 +2811,14 @@
           "_uid": "office_2_2_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_2_2_pc_2",
@@ -2975,9 +3020,14 @@
           "_uid": "office_3_2_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_3_2_pc_2",
@@ -3179,9 +3229,14 @@
           "_uid": "office_5_2_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_5_2_pc_2",
@@ -3383,9 +3438,14 @@
           "_uid": "office_12_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_12_pc_2",
@@ -3587,9 +3647,14 @@
           "_uid": "office_13_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_13_pc_2",
@@ -3791,9 +3856,14 @@
           "_uid": "office_2_3_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_2_3_pc_2",
@@ -3995,9 +4065,14 @@
           "_uid": "office_3_3_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_3_3_pc_2",
@@ -4199,9 +4274,14 @@
           "_uid": "office_5_3_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_5_3_pc_2",
@@ -4403,9 +4483,14 @@
           "_uid": "office_14_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_14_pc_2",
@@ -4607,9 +4692,14 @@
           "_uid": "office_15_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_15_pc_2",
@@ -4811,9 +4901,14 @@
           "_uid": "office_16_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_16_pc_2",
@@ -5015,9 +5110,14 @@
           "_uid": "office_17_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_17_pc_2",
@@ -5219,9 +5319,14 @@
           "_uid": "office_5_5_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_5_5_pc_2",
@@ -5423,9 +5528,14 @@
           "_uid": "office_18_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_18_pc_2",
@@ -5627,9 +5737,14 @@
           "_uid": "office_19_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_19_pc_2",
@@ -5831,9 +5946,14 @@
           "_uid": "office_5_6_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_5_6_pc_2",
@@ -6035,9 +6155,14 @@
           "_uid": "office_20_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_20_pc_2",
@@ -6239,9 +6364,14 @@
           "_uid": "office_21_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_21_pc_2",
@@ -6443,9 +6573,14 @@
           "_uid": "office_5_7_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_5_7_pc_2",
@@ -6647,9 +6782,14 @@
           "_uid": "office_22_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_22_pc_2",
@@ -6851,9 +6991,14 @@
           "_uid": "office_23_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_23_pc_2",
@@ -7055,9 +7200,14 @@
           "_uid": "office_5_8_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_5_8_pc_2",
@@ -7259,9 +7409,14 @@
           "_uid": "office_24_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_24_pc_2",
@@ -7463,9 +7618,14 @@
           "_uid": "office_0_9_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_0_9_pc_2",
@@ -7680,9 +7840,14 @@
           "_uid": "office_9_9_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_9_9_pc_2",
@@ -7884,9 +8049,14 @@
           "_uid": "office_25_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_25_pc_2",
@@ -8088,9 +8258,14 @@
           "_uid": "office_5_10_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_5_10_pc_2",
@@ -8292,9 +8467,14 @@
           "_uid": "office_26_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_26_pc_2",
@@ -8496,9 +8676,14 @@
           "_uid": "office_27_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_27_pc_2",
@@ -8700,9 +8885,14 @@
           "_uid": "office_5_11_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_5_11_pc_2",
@@ -8904,9 +9094,14 @@
           "_uid": "office_28_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_28_pc_2",
@@ -9108,9 +9303,14 @@
           "_uid": "office_29_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_29_pc_2",
@@ -9312,9 +9512,14 @@
           "_uid": "office_5_12_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_5_12_pc_2",
@@ -9516,9 +9721,14 @@
           "_uid": "office_30_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_30_pc_2",
@@ -9720,9 +9930,14 @@
           "_uid": "office_31_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_31_pc_2",
@@ -9924,9 +10139,14 @@
           "_uid": "office_32_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_32_pc_2",
@@ -10128,9 +10348,14 @@
           "_uid": "office_36_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_36_pc_2",
@@ -10332,9 +10557,14 @@
           "_uid": "office_37_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_37_pc_2",
@@ -10536,9 +10766,14 @@
           "_uid": "office_38_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_38_pc_2",
@@ -10740,9 +10975,14 @@
           "_uid": "office_39_chair_1",
           "type": "chair",
           "id": "chair",
-          "x": 35,
-          "y": 70.9,
-          "facing": 180
+          "x": 33.2,
+          "y": 93.7,
+          "facing": 90,
+          "occupied": {
+            "x": 35.9,
+            "y": 89.7,
+            "facing": 270
+          }
         },
         {
           "_uid": "office_39_pc_2",
@@ -13361,42 +13601,6 @@
       "rot": 0,
       "furniture": [
         {
-          "_uid": "conf_6_0_2x1_table_0",
-          "type": "conference_table",
-          "id": "table",
-          "x": 138.7,
-          "y": 108.7,
-          "w": 150,
-          "h": 64,
-          "facing": 0
-        },
-        {
-          "_uid": "conf_6_0_2x1_screen_1",
-          "type": "projection_screen",
-          "id": "screen",
-          "x": 280.3,
-          "y": 136.7,
-          "w": 110,
-          "h": 14,
-          "facing": 270
-        },
-        {
-          "_uid": "conf_6_0_2x1_chair_n2_2",
-          "type": "cushion_chair",
-          "id": "chair_n2",
-          "x": 223.8,
-          "y": 48.9,
-          "facing": 0
-        },
-        {
-          "_uid": "conf_6_0_2x1_chair_s2_3",
-          "type": "cushion_chair",
-          "id": "chair_s2",
-          "x": 223.4,
-          "y": 108.6,
-          "facing": 180
-        },
-        {
           "_uid": "conf_6_0_2x1_door_4",
           "type": "door",
           "x": 57.4,
@@ -13411,48 +13615,448 @@
           "roll": 0
         },
         {
-          "_uid": "conf_6_0_2x1_cushion_chair_5",
-          "type": "cushion_chair",
-          "x": 190.2,
-          "y": 48.8,
-          "facing": 0
+          "_uid": "lounge_chair_mu4v8dyk_2",
+          "type": "lounge_chair",
+          "x": 129.4,
+          "y": 31.9,
+          "w": 41,
+          "h": 23,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
         },
         {
-          "_uid": "conf_6_0_2x1_cushion_chair_6",
-          "type": "cushion_chair",
-          "x": 154.8,
-          "y": 48.3,
-          "facing": 0
+          "_uid": "lounge_chair_relax_mu4v8kei_4",
+          "type": "lounge_chair_relax",
+          "x": 147.8,
+          "y": 136.2,
+          "w": 27,
+          "h": 37,
+          "facing": 90,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
         },
         {
-          "_uid": "conf_6_0_2x1_cushion_chair_7",
-          "type": "cushion_chair",
-          "x": 188.4,
-          "y": 109.3,
-          "facing": 180
+          "_uid": "lounge_design_sofa_corner_mu4v8rpt_6",
+          "type": "lounge_design_sofa_corner",
+          "x": 107,
+          "y": 12,
+          "w": 75,
+          "h": 75,
+          "facing": 90,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
         },
         {
-          "_uid": "conf_6_0_2x1_cushion_chair_8",
-          "type": "cushion_chair",
-          "x": 149.9,
-          "y": 110.2,
-          "facing": 180
+          "_uid": "lounge_sofa_mu4v8xwu_7",
+          "type": "lounge_sofa",
+          "x": 144.5,
+          "y": 106.1,
+          "w": 54,
+          "h": 23,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
         },
         {
-          "_uid": "conf_6_0_2x1_cushion_chair_9",
-          "type": "cushion_chair",
-          "x": 129.6,
-          "y": 83.1,
-          "facing": 90
+          "_uid": "lounge_sofa_corner_mu4v90hx_8",
+          "type": "lounge_sofa_corner",
+          "x": 240.4,
+          "y": 115.2,
+          "w": 54,
+          "h": 54,
+          "facing": 270,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
         },
         {
-          "_uid": "conf_6_0_2x1_cushion_chair_10",
-          "type": "cushion_chair",
-          "x": 249.4,
-          "y": 77.6,
-          "facing": 270
+          "_uid": "lounge_sofa_ottoman_mu4v94xv_10",
+          "type": "lounge_sofa_ottoman",
+          "x": 271.9,
+          "y": 113.9,
+          "w": 24,
+          "h": 25,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "bookcase_mu4va59r_12",
+          "type": "bookcase",
+          "x": 248,
+          "y": 170.8,
+          "w": 22,
+          "h": 14,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "bookcase_open_mu4va6xn_13",
+          "type": "bookcase_open",
+          "x": 17.888888888888903,
+          "y": 152.9999999999999,
+          "w": 22,
+          "h": 14,
+          "facing": 90,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "bookcase_open_mu4vazhy_16",
+          "type": "bookcase_open",
+          "x": 17.888888888888868,
+          "y": 130,
+          "w": 22,
+          "h": 14,
+          "facing": 90,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "bookcase_open_mu4vb98w_17",
+          "type": "bookcase_open",
+          "x": 17.9,
+          "y": 106.5,
+          "w": 22,
+          "h": 14,
+          "facing": 90,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "bookcase_open_mu4vbcks_18",
+          "type": "bookcase_open",
+          "x": 18.3,
+          "y": 83.5,
+          "w": 22,
+          "h": 14,
+          "facing": 90,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "bookcase_open_mu4vbn4u_19",
+          "type": "bookcase_open",
+          "x": 18.2,
+          "y": 60.5,
+          "w": 22,
+          "h": 14,
+          "facing": 90,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "bookcase_open_mu4vbpxt_20",
+          "type": "bookcase_open",
+          "x": 17.888888888888903,
+          "y": 37.3,
+          "w": 22,
+          "h": 14,
+          "facing": 90,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "bookcase_open_mu4vbt6y_21",
+          "type": "bookcase_open",
+          "x": 17.9,
+          "y": 13.9,
+          "w": 22,
+          "h": 14,
+          "facing": 90,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "lounge_chair_mu4vdvh0_23",
+          "type": "lounge_chair",
+          "x": 186.5,
+          "y": 32,
+          "w": 41,
+          "h": 23,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "lounge_chair_mu4ve0lr_24",
+          "type": "lounge_chair",
+          "x": 187.1,
+          "y": 36.1,
+          "w": 41,
+          "h": 23,
+          "facing": 180,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "lounge_chair_mu4vea23_25",
+          "type": "lounge_chair",
+          "x": 129.3,
+          "y": 35.5,
+          "w": 41,
+          "h": 23,
+          "facing": 180,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "lounge_chair_relax_mu4vf5u0_26",
+          "type": "lounge_chair_relax",
+          "x": 132,
+          "y": 137.8,
+          "w": 27,
+          "h": 37,
+          "facing": 270,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "bookcase_mu4vgcho_27",
+          "type": "bookcase",
+          "x": 266.4,
+          "y": 186.6,
+          "w": 22,
+          "h": 14,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "bookcase_mu4vgdjn_28",
+          "type": "bookcase",
+          "x": 266.4,
+          "y": 186.6,
+          "w": 22,
+          "h": 14,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "bookcase_mu4vgg0h_29",
+          "type": "bookcase",
+          "x": 223.8,
+          "y": 170.3,
+          "w": 22,
+          "h": 14,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "lounge_chair_mu4vgzn0_30",
+          "type": "lounge_chair",
+          "x": 303.2,
+          "y": 36.3,
+          "w": 41,
+          "h": 23,
+          "facing": 180,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "lounge_chair_mu4vh4ch_32",
+          "type": "lounge_chair",
+          "x": 304.8,
+          "y": 33.2,
+          "w": 41,
+          "h": 23,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "bookcase_mu4vhbqn_33",
+          "type": "bookcase",
+          "x": 241.2,
+          "y": 187,
+          "w": 22,
+          "h": 14,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "bookcase_mu4vhcuz_34",
+          "type": "bookcase",
+          "x": 241.2,
+          "y": 187,
+          "w": 22,
+          "h": 14,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "bookcase_mu4vhdrc_35",
+          "type": "bookcase",
+          "x": 247.1,
+          "y": 23.5,
+          "w": 22,
+          "h": 14,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "bookcase_mu4vhlpy_36",
+          "type": "bookcase",
+          "x": 273.1,
+          "y": 23.8,
+          "w": 22,
+          "h": 14,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "rug_rectangle_mu4vv4ma_37",
+          "type": "rug_rectangle",
+          "x": 135.9,
+          "y": 76.6,
+          "w": 87,
+          "h": 51,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "potted_plant_mu4vvem5_39",
+          "type": "potted_plant",
+          "x": 41.4,
+          "y": 161.4,
+          "w": 12,
+          "h": 13,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "plant_mu4vvjpu_40",
+          "type": "plant",
+          "x": 342.1,
+          "y": 96.2,
+          "w": 24,
+          "h": 24,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "lamp_round_floor_mu4vwdrs_43",
+          "type": "lamp_round_floor",
+          "x": 112.6,
+          "y": 18.3,
+          "w": 8,
+          "h": 10,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        {
+          "_uid": "coffee_table_mu4wat35_51",
+          "type": "coffee_table",
+          "x": 89.3,
+          "y": 55.7,
+          "w": 37,
+          "h": 22,
+          "facing": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
         }
       ]
     }
-  ]
+  ],
+  "libraryTemplate": {
+    "size": 179,
+    "structure": [
+      {
+        "_uid": "conf_wn",
+        "type": "wall",
+        "x": 0,
+        "y": 0,
+        "w": 179,
+        "h": 8
+      },
+      {
+        "_uid": "conf_ww",
+        "type": "wall",
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 179
+      },
+      {
+        "_uid": "conf_we",
+        "type": "wall",
+        "x": 171,
+        "y": 0,
+        "w": 8,
+        "h": 179
+      },
+      {
+        "_uid": "conf_ws0",
+        "type": "wall",
+        "x": 0,
+        "y": 171,
+        "w": 69.5,
+        "h": 8
+      },
+      {
+        "_uid": "conf_ws1",
+        "type": "wall",
+        "x": 109.5,
+        "y": 171,
+        "w": 69.5,
+        "h": 8
+      },
+      {
+        "_uid": "conf_door",
+        "type": "door",
+        "x": 69.5,
+        "y": 171,
+        "w": 40,
+        "h": 8,
+        "facing": 0,
+        "hinge": "left",
+        "open": 0.38,
+        "doorEdge": "s"
+      }
+    ],
+    "furniture": []
+  }
 }

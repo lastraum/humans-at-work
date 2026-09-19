@@ -159,6 +159,8 @@ function createProcedural(type: string): THREE.Group {
   return root;
 }
 
+const CENTER_PIVOT = new Set(["chair", "guest_chair", "lounge_chair", "cushion_chair"]);
+
 function placeItem(item: FurnitureItem, plate: FloorPlate, mesh: THREE.Group) {
   const { width, height } = getItemSize(item, plate);
   const scale = FURNITURE_SCALE[item.type] ?? [1, 1, 1];
@@ -170,10 +172,17 @@ function placeItem(item: FurnitureItem, plate: FloorPlate, mesh: THREE.Group) {
   group.userData.editable = true;
   const inner = new THREE.Group();
   inner.name = "pivot";
-  inner.position.set(pivotX, 0, pivotZ);
-  mesh.position.set(-pivotX, 0, -pivotZ);
   mesh.scale.set(scale[0], scale[1], scale[2]);
   inner.add(mesh);
+  if (CENTER_PIVOT.has(item.type)) {
+    inner.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(mesh);
+    const c = box.getCenter(new THREE.Vector3());
+    mesh.position.set(mesh.position.x - c.x, mesh.position.y, mesh.position.z - c.z);
+  } else {
+    mesh.position.set(-pivotX, 0, -pivotZ);
+  }
+  inner.position.set(pivotX, 0, pivotZ);
   group.add(inner);
   applyItemTransform(group, item, plate);
   return group;
