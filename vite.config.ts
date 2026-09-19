@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig, type Plugin } from "vite";
 import { authPlugin } from "./server/auth";
+import { metricsPlugin } from "./server/metrics";
 import { floorRoomPlugin } from "./server/floorRoom";
 import { livekitGatePlugin } from "./server/livekitGate";
 
@@ -75,13 +76,15 @@ function floorPlatePlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [floorPlatePlugin(), floorRoomPlugin(), livekitGatePlugin(), authPlugin()],
+  plugins: [floorPlatePlugin(), floorRoomPlugin(), livekitGatePlugin(), authPlugin(), metricsPlugin()],
   server: {
     port: 5885,
     host: true,
     allowedHosts: ["humans.lastslice.co", ".lastslice.co"],
-    watch: { ignored: ["**/data/floor-plate.json", "**/data/accounts.json", "**/data/office-ads/**"] },
-    fs: { deny: [".env", ".env.*", "*.{crt,pem}", "**/.git/**", "**/data/accounts.json"] },
+    watch: {
+      ignored: ["**/data/floor-plate.json", "**/data/accounts.json", "**/data/metrics.json", "**/data/office-ads/**"],
+    },
+    fs: { deny: [".env", ".env.*", "*.{crt,pem}", "**/.git/**", "**/data/accounts.json", "**/data/metrics.json"] },
   },
   publicDir: "public",
 });

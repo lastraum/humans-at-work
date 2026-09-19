@@ -1,5 +1,6 @@
 import "./style.css";
 import * as THREE from "three";
+import { recordPageView } from "./metrics";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import plateJson from "../data/floor-plate.json";
 import { createAvatar, createAvatars, setAvatarName, setNameTagVisible } from "./createAvatars";
@@ -56,6 +57,8 @@ import type { ConferenceReservation, OfficeAd } from "./protocol";
 import { connectWorldChat } from "./worldChat";
 import { libraryAtCell, poseInQuietZone, setAmbientSilent } from "./quietZone";
 import type { Avatar, FloorPlate } from "./types";
+
+recordPageView();
 
 async function loadPlate(): Promise<FloorPlate> {
   const urls = [`/floor-plate.json?t=${Date.now()}`, `/__floor-plate?t=${Date.now()}`];
