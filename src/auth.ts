@@ -1,3 +1,5 @@
+import type { AvatarLook } from "./avatarLook";
+
 const TOKEN_KEY = "haw-session-token";
 
 export type AuthUser = {
@@ -5,6 +7,9 @@ export type AuthUser = {
   email: string;
   name: string;
   color: string;
+  company?: string;
+  profileUrl?: string;
+  look?: AvatarLook;
 };
 
 export type OfficeAdProfile = {
@@ -113,6 +118,7 @@ export async function verifyEmailCode(opts: {
   guestId: string;
   name: string;
   color: string;
+  look?: AvatarLook;
 }) {
   const data = await authFetch<{ token: string; user: AuthUser }>("/__auth/email/verify", {
     method: "POST",
@@ -127,6 +133,7 @@ export async function loginWithGoogle(opts: {
   guestId: string;
   name: string;
   color: string;
+  look?: AvatarLook;
 }) {
   const data = await authFetch<{ token: string; user: AuthUser }>("/__auth/google", {
     method: "POST",
@@ -143,7 +150,16 @@ export async function logoutAccount() {
 }
 
 export async function saveAccountName(name: string) {
-  return authFetch<{ user: AuthUser }>("/__auth/profile", { method: "POST", body: { name } });
+  return saveAccountProfile({ name });
+}
+
+export async function saveAccountProfile(opts: {
+  name: string;
+  company?: string;
+  profileUrl?: string;
+  look?: AvatarLook;
+}) {
+  return authFetch<{ user: AuthUser }>("/__auth/profile", { method: "POST", body: opts });
 }
 
 export async function bindSessionWallet(address: string) {

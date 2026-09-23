@@ -6,6 +6,7 @@ import {
   collectColliders,
   snapToStandable,
   tryMove,
+  type CellBlocked,
   type Collider,
 } from "./collision";
 import type { Pose } from "./protocol";
@@ -16,6 +17,7 @@ export type CanvasPoint = { x: number; y: number };
 export type Locomotion = {
   setWorldGoal: (wx: number, wz: number) => CanvasPoint | null;
   setCanvasGoal: (x: number, y: number) => CanvasPoint | null;
+  setCellBlocked: (fn: CellBlocked | null) => void;
   snap: (pose: Pose) => void;
   moving: () => boolean;
   pose: () => Pose;
@@ -33,6 +35,7 @@ export function attachLocomotion(opts: {
   const inside = opts.inside ?? true;
   let path: { x: number; y: number }[] = [];
   let colliders: Collider[] = collectColliders(colliderRoots);
+  let cellBlocked: CellBlocked | null = null;
 
   const refresh = () => {
     colliders = collectColliders(colliderRoots);
@@ -53,6 +56,7 @@ export function attachLocomotion(opts: {
       plate,
       inside,
       colliders,
+      cellBlocked,
     );
     if (!free) return fromWorld(object.position.x, object.position.z, plate);
     if (
@@ -67,11 +71,11 @@ export function attachLocomotion(opts: {
 
   const pathTo = (wx: number, wz: number): CanvasPoint | null => {
     refresh();
-    const snapped = snapToStandable(wx, wz, plate, inside, colliders);
+    const snapped = snapToStandable(wx, wz, plate, inside, colliders, cellBlocked);
     if (!snapped) return null;
     const start = unstick();
     const goal = fromWorld(snapped.x, snapped.z, plate);
-    const next = astarWorld(start, goal, plate, inside, colliders);
+    const next = astarWorld(start, goal, plate, inside, colliders, cellBlocked);
     if (!next?.length) return null;
     path = next;
     return goal;
@@ -98,6 +102,9 @@ export function attachLocomotion(opts: {
       const [wx, , wz] = toWorld(x, y, plate);
       return goalNear(wx, wz);
     },
+    setCellBlocked(fn) {
+      cellBlocked = fn;
+    },
     snap(next) {
       path = [];
       avatar.x = next.x;
@@ -106,6 +113,13 @@ export function attachLocomotion(opts: {
       avatar.pose = next.pose;
       avatar.col = next.col ?? Math.floor(next.x / plate.grid.cellSize);
       avatar.row = next.row ?? Math.floor(next.y / plate.grid.cellSize);
+      if (next.pose === "sit") {
+        avatar.seatId = next.seatId;
+        avatar.seatY = next.seatY;
+      } else {
+        avatar.seatId = undefined;
+        avatar.seatY = undefined;
+      }
       applyAvatarTransform(object, avatar, plate);
     },
     moving: () => path.length > 0,
@@ -116,6 +130,8 @@ export function attachLocomotion(opts: {
       pose: avatar.pose,
       col: avatar.col,
       row: avatar.row,
+      seatId: avatar.pose === "sit" ? avatar.seatId : undefined,
+      seatY: avatar.pose === "sit" ? avatar.seatY : undefined,
     }),
     update(dt) {
       if (!path.length || dt <= 0) return false;
@@ -146,6 +162,7 @@ export function attachLocomotion(opts: {
           plate,
           inside,
           colliders,
+          cellBlocked,
         );
         if (!moved) {
           path.shift();

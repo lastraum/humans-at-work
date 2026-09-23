@@ -1,3 +1,5 @@
+import type { AvatarLook } from "./avatarLook";
+
 export type FurnitureItem = {
   _uid: string;
   type: string;
@@ -33,6 +35,10 @@ export type Avatar = {
   col?: number;
   row?: number;
   name?: string;
+  seatId?: string;
+  seatY?: number;
+  /** Explicit editor look. Absent avatars use a stable look derived from id. */
+  look?: AvatarLook;
 };
 
 export type CellKind =

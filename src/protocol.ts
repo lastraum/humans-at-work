@@ -1,3 +1,5 @@
+import type { AvatarLook } from "./avatarLook";
+
 /** Game-state wire (claims, knocks, poses) over the local floor WebSocket.
  *  Chat rides a single world LiveKit room; the SFU delivers office packets
  *  only to destinationIdentities (DCL private-room pattern). */
@@ -9,6 +11,10 @@ export type Pose = {
   pose: "sit" | "stand";
   col?: number;
   row?: number;
+  /** Furniture `_uid` when sitting. Locked per floor so two people cannot share a seat. */
+  seatId?: string;
+  /** World Y for this sit. Beanbags sit higher than desk chairs. */
+  seatY?: number;
 };
 
 export type Peer = {
@@ -21,6 +27,10 @@ export type Peer = {
   floor?: number;
   /** Opt-in: others may send a whisper request. Default off. */
   chatAvailable?: boolean;
+  company?: string;
+  profileUrl?: string;
+  /** Avatar editor. Omitted by older clients; viewers derive a stable look from id. */
+  look?: AvatarLook;
 } & Pose;
 
 export type DeskKind = "office" | "cubicle";
@@ -30,6 +40,8 @@ export type Privacy = "open" | "busy" | "focus";
 /** Floor is everyone. Office is only peers whose pose is inside that desk. */
 export type ChatChannel = "floor" | "office";
 
+
+export type ConfAccess = "open" | "code";
 
 /** Conference room booking. Day boundary is America/Los_Angeles (PT). */
 export type ConferenceReservation = {
@@ -43,6 +55,12 @@ export type ConferenceReservation = {
   startMin: number;
   durationMin: 30 | 60;
   createdAt: number;
+  /** Open: anyone can walk in during the slot. Code: door needs the host's code. */
+  access: ConfAccess;
+  /** Host only. Omitted in public broadcasts. */
+  code?: string;
+  /** True for the host and anyone who redeemed this slot's code. */
+  admitted?: boolean;
 };
 
 /** Billboard on an occupied office's exterior windows. Omitted when vacant or toggled off. */
@@ -68,13 +86,15 @@ export type Claim = {
   timezone?: string;
   /** Present only for occupied offices with an enabled window ad. */
   officeAd?: OfficeAd;
+  company?: string;
+  profileUrl?: string;
 };
 
 export type ClientMsg =
-  | ({ type: "hello"; id: string; name: string; color: string; address?: string; token?: string } & Pose)
+  | ({ type: "hello"; id: string; name: string; color: string; address?: string; token?: string; company?: string; profileUrl?: string; timezone?: string; look?: AvatarLook } & Pose)
   | { type: "move"; x: number; y: number; facing?: number }
   | ({ type: "state" } & Pose)
-  | { type: "profile"; name: string }
+  | { type: "profile"; name: string; company?: string; profileUrl?: string; color?: string; look?: AvatarLook }
   | { type: "claim"; deskId: string; timezone?: string }
   | { type: "timezone"; tz: string | null }
   | { type: "release" }
@@ -89,20 +109,25 @@ export type ClientMsg =
   | { type: "boot" }
   | { type: "block"; id: string }
   | { type: "unblock"; id: string }
-  | { type: "reserve"; roomId: string; day: string; startMin: number; durationMin: 30 | 60 }
+  | { type: "reserve"; roomId: string; day: string; startMin: number; durationMin: 30 | 60; access?: ConfAccess }
   | { type: "cancel-reserve"; id: string }
+  | { type: "conf-access"; id: string; access: ConfAccess }
+  | { type: "conf-join"; roomId: string; code: string }
+  | { type: "conf-boot"; roomId: string; peerId: string }
   | { type: "office-ad"; enabled: boolean }
-  | { type: "floor"; floor: number };
+  | { type: "floor"; floor: number }
+  | { type: "shift-hold" };
 
 export type ServerMsg =
-  | { type: "welcome"; roomId: string; self: Peer; peers: Peer[]; claims: Claim[]; reservations?: ConferenceReservation[]; blocked?: string[]; blockedBy?: string[]; officeAds?: OfficeAd[]; floor?: number; maxFloor?: number; floors?: number[] }
+  | { type: "welcome"; roomId: string; self: Peer; peers: Peer[]; claims: Claim[]; reservations?: ConferenceReservation[]; blocked?: string[]; blockedBy?: string[]; officeAds?: OfficeAd[]; floor?: number; maxFloor?: number; floors?: number[]; xp?: number }
+  | { type: "xp"; xp: number }
   | { type: "join"; peer: Peer }
   | { type: "leave"; id: string }
   | { type: "floors"; floor: number; maxFloor: number; floors: number[] }
   | { type: "floor"; floor: number; maxFloor: number; floors: number[]; peers: Peer[]; claims: Claim[]; officeAds?: OfficeAd[] }
   | { type: "move"; id: string; x: number; y: number; facing?: number }
   | ({ type: "state"; id: string } & Pose)
-  | { type: "profile"; id: string; name: string }
+  | { type: "profile"; id: string; name: string; company?: string; profileUrl?: string; color?: string; look?: AvatarLook }
   | { type: "claim"; claim: Claim }
   | { type: "release"; deskId: string; peerId: string }
   | { type: "chat"; id: string; name: string; text: string; channel: ChatChannel; deskId?: string }
@@ -119,6 +144,8 @@ export type ServerMsg =
   | { type: "reservations"; reservations: ConferenceReservation[] }
   | { type: "reserve"; reservation: ConferenceReservation }
   | { type: "cancel-reserve"; id: string }
+  | { type: "conf-admit"; reservationId: string; roomId: string }
+  | { type: "conf-kick"; roomId: string; reason: "ended" | "denied" }
   | { type: "office-ad"; ad: OfficeAd | null; deskId: string; peerId: string }
   | { type: "error"; message: string; deskId?: string };
 
@@ -128,4 +155,26 @@ export function clampPrivacy(value: unknown): Privacy {
 
 export const ROOM_PATH = "/__room";
 export const MAX_NAME = 24;
+export const MAX_COMPANY = 32;
+export const MAX_PROFILE_URL = 200;
 export const MAX_ID = 64;
+
+export function clampCompany(value: unknown) {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_COMPANY);
+}
+
+export function clampProfileUrl(value: unknown) {
+  const raw = String(value ?? "").trim().slice(0, MAX_PROFILE_URL);
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+    if (url.username || url.password) return "";
+    return url.toString().slice(0, MAX_PROFILE_URL);
+  } catch {
+    return "";
+  }
+}

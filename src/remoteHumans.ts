@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import { createAvatar, setAvatarName, setAvatarPose } from "./createAvatars";
+import { sameLook, type AvatarLook } from "./avatarLook";
+import { createAvatar, restyleAvatar, setAvatarName, setAvatarPose } from "./createAvatars";
 import { attachLocomotion, type Locomotion } from "./locomotion";
 import type { Peer, Pose } from "./protocol";
 import type { Avatar, FloorPlate } from "./types";
@@ -11,19 +12,22 @@ type Remote = {
   group: THREE.Group;
   avatar: Avatar;
   walk: Locomotion;
-  pendingSit: { x: number; y: number; facing: number } | null;
+  pendingSit: { x: number; y: number; facing: number; seatId?: string; seatY?: number } | null;
 };
 
 function asAvatar(peer: Peer): Avatar {
   return {
     id: peer.id,
     pose: peer.pose,
+    seatId: peer.seatId,
+    seatY: peer.seatY,
     facing: peer.facing,
     x: peer.x,
     y: peer.y,
     color: peer.color,
     col: peer.col,
     row: peer.row,
+    look: peer.look,
   };
 }
 
@@ -40,6 +44,9 @@ export function attachRemoteHumans(opts: {
     const existing = remotes.get(peer.id);
     if (existing) {
       existing.peer = peer;
+      existing.avatar.color = peer.color;
+      existing.avatar.look = peer.look;
+      restyleAvatar(existing.group);
       existing.walk.snap(peer);
       setAvatarName(existing.group, peer.name);
       return;
@@ -76,7 +83,7 @@ export function attachRemoteHumans(opts: {
         remote.walk.snap({ ...remote.walk.pose(), x, y, pose: "stand" });
       }
     },
-    walkToSit(id: string, seat: { x: number; y: number; facing: number }) {
+    walkToSit(id: string, seat: { x: number; y: number; facing: number; seatId?: string; seatY?: number }) {
       const remote = remotes.get(id);
       if (!remote) return;
       if (remote.avatar.pose === "sit") setAvatarPose(remote.group, "stand");
@@ -100,7 +107,13 @@ export function attachRemoteHumans(opts: {
       const dist = Math.hypot(dx, dy);
       if (pose.pose === "sit") {
         if (remote.walk.moving() && dist >= SNAP_CANVAS) {
-          remote.pendingSit = { x: pose.x, y: pose.y, facing: pose.facing };
+          remote.pendingSit = {
+            x: pose.x,
+            y: pose.y,
+            facing: pose.facing,
+            seatId: pose.seatId,
+            seatY: pose.seatY,
+          };
           return;
         }
         remote.pendingSit = null;
@@ -124,6 +137,8 @@ export function attachRemoteHumans(opts: {
         y: remote.avatar.y,
         col: remote.avatar.col,
         row: remote.avatar.row,
+        pose: remote.avatar.pose,
+        seatId: remote.avatar.seatId,
       }));
     },
     avatars() {
@@ -165,6 +180,28 @@ export function attachRemoteHumans(opts: {
       if (!remote) return;
       remote.peer.name = name;
       setAvatarName(remote.group, name);
+    },
+    profile(id: string) {
+      const peer = remotes.get(id)?.peer;
+      if (!peer) return null;
+      return { company: peer.company, profileUrl: peer.profileUrl };
+    },
+    setProfile(id: string, company?: string, profileUrl?: string) {
+      const remote = remotes.get(id);
+      if (!remote) return;
+      remote.peer.company = company || undefined;
+      remote.peer.profileUrl = profileUrl || undefined;
+    },
+    setLook(id: string, look: AvatarLook) {
+      const remote = remotes.get(id);
+      if (!remote) return;
+      const before = remote.avatar.look;
+      remote.peer.look = look;
+      remote.peer.color = look.shirt;
+      remote.avatar.look = look;
+      remote.avatar.color = look.shirt;
+      if (before && sameLook(before, look)) return;
+      restyleAvatar(remote.group);
     },
     update(dt: number) {
       for (const remote of remotes.values()) {

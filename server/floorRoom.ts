@@ -5,6 +5,7 @@ import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { Plugin, ViteDevServer } from "vite";
 import { WebSocket, WebSocketServer } from "ws";
+import { clampLook } from "../src/avatarLook";
 import {
   MAX_ID,
   MAX_NAME,
@@ -12,20 +13,28 @@ import {
   type ChatChannel,
   type Claim,
   type ClientMsg,
+  type ConferenceReservation,
   type DeskKind,
   type OfficeAd,
   type Peer,
   type Pose,
   type ServerMsg,
+  clampCompany,
   clampPrivacy,
+  clampProfileUrl,
 } from "../src/protocol";
 import { FIRST_FLOOR, groupClaimsByFloor, selectableFloors, sameFloors } from "../src/floors";
 import { officeAdForPeer, setUserBlock, userBlocks, userIdForToken, whoBlocked } from "./auth";
+import { clockZone, countryFrom, isFloorBot, noteClose, noteHello, noteShiftHold, startPresenceTick, stopPresenceTick } from "./presence";
 import {
+  joinReservation,
   knownConferenceIds,
   listReservations,
+  liveReservation,
   tryCancel,
   tryReserve,
+  trySetAccess,
+  viewReservation,
 } from "./reservations";
 
 type Slot = {
@@ -48,6 +57,7 @@ type WhisperPair = {
 const rooms = new Map<string, Map<string, Slot>>();
 const claimsByRoom = new Map<string, Map<string, Claim>>();
 const whispersByRoom = new Map<string, Map<string, WhisperPair>>();
+const seatsByRoom = new Map<string, Map<string, string>>();
 const REPLACED = 4001;
 
 type DeskFootprint = { id: string; col: number; row: number; cols: number; rows: number };
@@ -87,6 +97,34 @@ function loadDeskFootprints(): {
 }
 
 const { cell: CELL, desks: DESKS, officeIds: OFFICE_IDS, fixtureIds: FIXTURE_IDS } = loadDeskFootprints();
+
+type ConfFootprint = { id: string; col: number; row: number; cols: number; rows: number };
+
+function loadConferenceFootprints(): ConfFootprint[] {
+  try {
+    const raw = JSON.parse(
+      readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../data/floor-plate.json"), "utf8"),
+    ) as { conferences?: ConfFootprint[] };
+    return (raw.conferences ?? [])
+      .map((room) => ({
+        id: String(room.id ?? ""),
+        col: Number(room.col) || 0,
+        row: Number(room.row) || 0,
+        cols: Number(room.cols) || 1,
+        rows: Number(room.rows) || 1,
+      }))
+      .filter((room) => room.id);
+  } catch {
+    return [];
+  }
+}
+
+const CONFERENCES = loadConferenceFootprints();
+/** buildingId → reservationId → peer ids who redeemed the code */
+const confAdmitted = new Map<string, Map<string, Set<string>>>();
+/** buildingId → conferenceId → last live reservation snapshot */
+const confLastLive = new Map<string, Map<string, { id: string; access: "open" | "code" } | null>>();
+let confSweep: ReturnType<typeof setInterval> | null = null;
 
 function loadQuietCells(): Set<string> {
   const cells = new Set<string>();
@@ -150,6 +188,150 @@ function peerDesk(peer: Peer) {
   return deskAt(col, row);
 }
 
+function conferenceAt(col: number, row: number) {
+  for (const room of CONFERENCES) {
+    if (col >= room.col && col < room.col + room.cols && row >= room.row && row < room.row + room.rows) {
+      return room;
+    }
+  }
+  return null;
+}
+
+function peerConference(peer: Peer) {
+  const { col, row } = peerCell(peer);
+  return conferenceAt(col, row);
+}
+
+function peerChatRoom(peer: Peer) {
+  return peerDesk(peer) ?? peerConference(peer)?.id ?? null;
+}
+
+function admittedOf(buildingId: string) {
+  let map = confAdmitted.get(buildingId);
+  if (!map) {
+    map = new Map();
+    confAdmitted.set(buildingId, map);
+  }
+  return map;
+}
+
+function admittedPeers(buildingId: string, reservationId: string) {
+  const map = admittedOf(buildingId);
+  let set = map.get(reservationId);
+  if (!set) {
+    set = new Set();
+    map.set(reservationId, set);
+  }
+  return set;
+}
+
+function viewerAdmitted(buildingId: string, peerId: string) {
+  const out = new Set<string>();
+  for (const [reservationId, peers] of admittedOf(buildingId)) {
+    if (peers.has(peerId)) out.add(reservationId);
+  }
+  return out;
+}
+
+function canStayInConference(buildingId: string, peer: Peer, confId: string) {
+  const live = liveReservation(confId);
+  if (!live) return true;
+  if (live.access !== "code") return true;
+  if (live.peerId === peer.id) return true;
+  return admittedPeers(buildingId, live.id).has(peer.id);
+}
+
+function hallwayOf(conf: ConfFootprint) {
+  return {
+    x: (conf.col + conf.cols / 2) * CELL,
+    y: (conf.row + conf.rows) * CELL + CELL / 2,
+  };
+}
+
+function publishReservations(room: Map<string, Slot>, buildingId: string) {
+  const list = listReservations();
+  for (const dest of room.values()) {
+    send(dest.ws, {
+      type: "reservations",
+      reservations: list.map((row) =>
+        viewReservation(row, dest.peer.id, viewerAdmitted(buildingId, dest.peer.id)),
+      ),
+    });
+  }
+}
+
+function publishReserve(room: Map<string, Slot>, buildingId: string, reservation: ConferenceReservation) {
+  for (const dest of room.values()) {
+    send(dest.ws, {
+      type: "reserve",
+      reservation: viewReservation(
+        reservation,
+        dest.peer.id,
+        viewerAdmitted(buildingId, dest.peer.id),
+      ),
+    });
+  }
+}
+
+function kickFromConference(
+  room: Map<string, Slot>,
+  buildingId: string,
+  slot: Slot,
+  conf: ConfFootprint,
+  reason: "ended" | "denied",
+) {
+  releaseSeat(buildingId, slot.peer.id);
+  const hall = hallwayOf(conf);
+  slot.peer.x = hall.x;
+  slot.peer.y = hall.y;
+  slot.peer.col = Math.floor(hall.x / CELL);
+  slot.peer.row = Math.floor(hall.y / CELL);
+  slot.peer.pose = "stand";
+  delete slot.peer.seatId;
+  delete slot.peer.seatY;
+  send(slot.ws, { type: "conf-kick", roomId: conf.id, reason });
+  broadcastFloor(room, peerFloor(slot.peer), null, { type: "state", id: slot.peer.id, ...slot.peer });
+}
+
+function sweepConferenceRooms() {
+  const list = listReservations();
+  for (const [buildingId, room] of rooms) {
+    let last = confLastLive.get(buildingId);
+    if (!last) {
+      last = new Map();
+      confLastLive.set(buildingId, last);
+    }
+    for (const conf of CONFERENCES) {
+      const live = liveReservation(conf.id, Date.now(), list);
+      const prev = last.get(conf.id) ?? null;
+      last.set(conf.id, live ? { id: live.id, access: live.access } : null);
+      const codeEnded = Boolean(prev && prev.access === "code" && prev.id !== live?.id && !live);
+      for (const slot of room.values()) {
+        if (peerConference(slot.peer)?.id !== conf.id) continue;
+        if (codeEnded) {
+          kickFromConference(room, buildingId, slot, conf, "ended");
+          continue;
+        }
+        if (!canStayInConference(buildingId, slot.peer, conf.id)) {
+          kickFromConference(room, buildingId, slot, conf, "denied");
+        }
+      }
+    }
+  }
+}
+
+function admitPeopleInRoom(
+  room: Map<string, Slot>,
+  buildingId: string,
+  reservation: ConferenceReservation,
+) {
+  const set = admittedPeers(buildingId, reservation.id);
+  set.add(reservation.peerId);
+  for (const slot of room.values()) {
+    if (peerConference(slot.peer)?.id === reservation.roomId) set.add(slot.peer.id);
+  }
+}
+
 function peerFloor(peer: Peer) {
   const n = Math.trunc(Number(peer.floor) || FIRST_FLOOR);
   return n >= FIRST_FLOOR ? n : FIRST_FLOOR;
@@ -164,6 +346,23 @@ function sendToDesk(room: Map<string, Slot>, deskId: string, floor: number, msg:
   for (const slot of room.values()) {
     if (peerFloor(slot.peer) !== floor) continue;
     if (peerDesk(slot.peer) !== deskId) continue;
+    if (slot.ws.readyState === WebSocket.OPEN) slot.ws.send(raw);
+  }
+}
+
+function sendToChatRoom(
+  room: Map<string, Slot>,
+  deskId: string,
+  floor: number,
+  buildingId: string,
+  msg: ServerMsg,
+) {
+  const raw = JSON.stringify(msg);
+  for (const slot of room.values()) {
+    if (peerFloor(slot.peer) !== floor) continue;
+    if (peerChatRoom(slot.peer) !== deskId) continue;
+    const conf = peerConference(slot.peer);
+    if (conf && !canStayInConference(buildingId, slot.peer, conf.id)) continue;
     if (slot.ws.readyState === WebSocket.OPEN) slot.ws.send(raw);
   }
 }
@@ -319,6 +518,14 @@ function clampId(value: unknown) {
   return /^[A-Za-z0-9._:-]+$/.test(id) ? id : "";
 }
 
+/** Local fill-floor bots may claim without an account. Loopback only. */
+function localFillBot(id: string, token: unknown, req: IncomingMessage) {
+  if (!id.startsWith("bot-")) return false;
+  if (String(token ?? "") !== "haw-fill-floor") return false;
+  const addr = req.socket.remoteAddress ?? "";
+  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+}
+
 function num(value: unknown, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -326,6 +533,8 @@ function num(value: unknown, fallback = 0) {
 
 function poseOf(msg: Partial<Pose>): Pose {
   const pose = msg.pose === "sit" ? "sit" : "stand";
+  const seatId = pose === "sit" ? clampId(msg.seatId) : "";
+  const seatY = pose === "sit" && msg.seatY != null ? num(msg.seatY) : undefined;
   return {
     x: num(msg.x),
     y: num(msg.y),
@@ -333,7 +542,39 @@ function poseOf(msg: Partial<Pose>): Pose {
     pose,
     col: msg.col === undefined ? undefined : num(msg.col),
     row: msg.row === undefined ? undefined : num(msg.row),
+    seatId: seatId || undefined,
+    seatY: Number.isFinite(seatY) ? seatY : undefined,
   };
+}
+
+function seatsOf(roomId: string) {
+  let map = seatsByRoom.get(roomId);
+  if (!map) {
+    map = new Map();
+    seatsByRoom.set(roomId, map);
+  }
+  return map;
+}
+
+function seatKey(floor: number, seatId: string) {
+  return `${floor}:${seatId}`;
+}
+
+function releaseSeat(roomId: string, peerId: string) {
+  const seats = seatsOf(roomId);
+  for (const [key, id] of seats) {
+    if (id === peerId) seats.delete(key);
+  }
+}
+
+function takeSeat(roomId: string, floor: number, peerId: string, seatId: string) {
+  const seats = seatsOf(roomId);
+  const key = seatKey(floor, seatId);
+  const taken = seats.get(key);
+  if (taken && taken !== peerId) return false;
+  releaseSeat(roomId, peerId);
+  seats.set(key, peerId);
+  return true;
 }
 
 function roomIdOf(req: IncomingMessage) {
@@ -360,6 +601,8 @@ function attachRoom(httpServer: Server) {
     });
   };
   httpServer.prependListener("upgrade", onUpgrade);
+  if (!confSweep) confSweep = setInterval(sweepConferenceRooms, 4000);
+  startPresenceTick();
 
   wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
     const roomId = roomIdOf(req);
@@ -381,7 +624,8 @@ function attachRoom(httpServer: Server) {
       if (msg.type === "hello") {
         const id = clampId(msg.id);
         const name = clampName(msg.name) || `Guest-${id.slice(0, 4)}`;
-        const color = String(msg.color ?? "#f4a261").slice(0, 16);
+        const look = clampLook(msg.look);
+        const color = look?.shirt || String(msg.color ?? "#f4a261").slice(0, 16);
         if (!id) {
           send(ws, { type: "error", message: "bad id" });
           return;
@@ -416,7 +660,7 @@ function attachRoom(httpServer: Server) {
         }
         const token = String(msg.token ?? "").trim();
         const authedId = userIdForToken(token);
-        const signedIn = Boolean(authedId && authedId === id);
+        const signedIn = Boolean(authedId && authedId === id) || localFillBot(id, token, req);
         const existing = room!.get(id);
         const previous = existing && existing.ws !== ws ? existing.ws : null;
         const ownClaim = [...claims.values()].find((claim) => claim.peerId === id);
@@ -428,7 +672,29 @@ function attachRoom(httpServer: Server) {
           Boolean(existing && peerFloor(existing.peer) === wanted);
         const floor = stay ? wanted : FIRST_FLOOR;
         const chatAvailable = Boolean(existing && existing.ws === ws && existing.chatAvailable);
-        const peer: Peer = { id, name, color, address, floor, chatAvailable, ...poseOf(msg) };
+        const company = clampCompany(msg.company) || undefined;
+        const profileUrl = clampProfileUrl(msg.profileUrl) || undefined;
+        const peer: Peer = {
+          id,
+          name,
+          color,
+          address,
+          floor,
+          chatAvailable,
+          company,
+          profileUrl,
+          look,
+          ...poseOf(msg),
+        };
+        if (peer.pose === "sit" && peer.seatId) {
+          if (!takeSeat(roomId, floor, id, peer.seatId)) {
+            peer.pose = "stand";
+            delete peer.seatId;
+            delete peer.seatY;
+          }
+        } else {
+          releaseSeat(roomId, id);
+        }
         selfId = id;
         const blocked = new Set([
           ...(signedIn ? userBlocks(id) : []),
@@ -444,19 +710,30 @@ function attachRoom(httpServer: Server) {
           if (claim.peerId === id) syncClaimAd(claim);
         }
         const view = viewOf(room!, claims, floor, id);
+        const xp = noteHello({
+          id,
+          ws,
+          signedIn,
+          bot: isFloorBot(id) || localFillBot(id, token, req),
+          tz: clockZone(msg.timezone),
+          country: countryFrom(req),
+        });
         send(ws, {
           type: "welcome",
           roomId,
           self: peer,
           peers: view.peers,
           claims: view.claims,
-          reservations: listReservations(),
+          reservations: listReservations().map((row) =>
+            viewReservation(row, id, viewerAdmitted(roomId, id)),
+          ),
           blocked: [...blocked],
           blockedBy: [...blockedBy],
           officeAds: view.officeAds,
           floor,
           maxFloor,
           floors: openFloors,
+          xp,
         });
         if (existing && existing.ws === ws) {
           broadcastFloor(room!, floor, id, { type: "state", id, ...peer });
@@ -516,7 +793,16 @@ function attachRoom(httpServer: Server) {
       }
       if (msg.type === "state") {
         const floor = peerFloor(slot.peer);
-        Object.assign(slot.peer, poseOf(msg), {
+        const next = poseOf(msg);
+        if (next.pose === "sit" && next.seatId) {
+          if (!takeSeat(roomId, floor, selfId, next.seatId)) {
+            send(ws, { type: "error", message: "seat taken" });
+            return;
+          }
+        } else {
+          releaseSeat(roomId, selfId);
+        }
+        Object.assign(slot.peer, next, {
           id: slot.peer.id,
           name: slot.peer.name,
           color: slot.peer.color,
@@ -528,14 +814,37 @@ function attachRoom(httpServer: Server) {
       if (msg.type === "profile") {
         const name = clampName(msg.name);
         if (!name) return;
+        const company = clampCompany(msg.company) || undefined;
+        const profileUrl = clampProfileUrl(msg.profileUrl) || undefined;
         slot.peer.name = name;
-        broadcast(room!, selfId, { type: "profile", id: selfId, name });
+        slot.peer.company = company;
+        slot.peer.profileUrl = profileUrl;
+        const look = clampLook(msg.look);
+        if (look) {
+          slot.peer.look = look;
+          slot.peer.color = look.shirt;
+        }
+        broadcast(room!, selfId, {
+          type: "profile",
+          id: selfId,
+          name,
+          company,
+          profileUrl,
+          color: slot.peer.color,
+          look: slot.peer.look,
+        });
         const claims = claimsOf(roomId);
         for (const claim of claims.values()) {
           if (claim.peerId !== selfId) continue;
           claim.name = name;
+          claim.company = company;
+          claim.profileUrl = profileUrl;
           broadcastFloor(room!, claimFloor(claim), null, { type: "claim", claim });
         }
+        return;
+      }
+      if (msg.type === "shift-hold") {
+        if (!slot.signedIn) noteShiftHold(selfId, ws);
         return;
       }
       if (msg.type === "floor") {
@@ -552,7 +861,11 @@ function attachRoom(httpServer: Server) {
           return;
         }
         broadcastFloor(room!, from, selfId, { type: "leave", id: selfId });
+        releaseSeat(roomId, selfId);
         slot.peer.floor = target;
+        slot.peer.pose = "stand";
+        delete slot.peer.seatId;
+        delete slot.peer.seatY;
         const view = viewOf(room!, claims, target, selfId);
         send(ws, {
           type: "floor",
@@ -593,8 +906,18 @@ function attachRoom(httpServer: Server) {
           since: Date.now(),
           floor,
           timezone: tz || undefined,
+          company: slot.peer.company,
+          profileUrl: slot.peer.profileUrl,
         };
         syncClaimAd(claim);
+        if (selfId.startsWith("bot-") && slot.signedIn && claim.kind === "office" && !claim.officeAd) {
+          claim.officeAd = {
+            deskId,
+            peerId: selfId,
+            enabled: true,
+            url: `fill-ad:${deskId}`,
+          };
+        }
         claims.set(key, claim);
         broadcastFloor(room!, floor, null, { type: "claim", claim });
         if (claim.officeAd) {
@@ -785,9 +1108,11 @@ function attachRoom(httpServer: Server) {
         const floor = peerFloor(slot.peer);
         const channel: ChatChannel = msg.channel === "office" ? "office" : "floor";
         if (channel === "office") {
-          const deskId = peerDesk(slot.peer);
+          const deskId = peerChatRoom(slot.peer);
           if (!deskId) return;
-          sendToDesk(room!, deskId, floor, {
+          const conf = peerConference(slot.peer);
+          if (conf && !canStayInConference(roomId, slot.peer, conf.id)) return;
+          sendToChatRoom(room!, deskId, floor, roomId, {
             type: "chat",
             id: selfId,
             name: slot.peer.name,
@@ -845,12 +1170,17 @@ function attachRoom(httpServer: Server) {
           day: String(msg.day ?? ""),
           startMin: Number(msg.startMin),
           durationMin: Number(msg.durationMin),
+          access: msg.access === "code" ? "code" : "open",
         });
         if (!result.ok) {
           send(ws, { type: "error", message: result.error });
           return;
         }
-        broadcast(room!, null, { type: "reserve", reservation: result.reservation });
+        if (result.reservation.access === "code") {
+          admitPeopleInRoom(room!, roomId, result.reservation);
+        }
+        publishReserve(room!, roomId, result.reservation);
+        sweepConferenceRooms();
         return;
       }
       if (msg.type === "cancel-reserve") {
@@ -860,7 +1190,68 @@ function attachRoom(httpServer: Server) {
           send(ws, { type: "error", message: result.error });
           return;
         }
+        admittedOf(roomId).delete(result.id);
         broadcast(room!, null, { type: "cancel-reserve", id: result.id });
+        sweepConferenceRooms();
+        return;
+      }
+      if (msg.type === "conf-access") {
+        if (needAccount()) return;
+        const result = trySetAccess(
+          String(msg.id ?? ""),
+          selfId,
+          msg.access === "code" ? "code" : "open",
+        );
+        if (!result.ok) {
+          send(ws, { type: "error", message: result.error });
+          return;
+        }
+        if (result.reservation.access === "code") {
+          admitPeopleInRoom(room!, roomId, result.reservation);
+        } else {
+          admittedOf(roomId).delete(result.reservation.id);
+        }
+        publishReserve(room!, roomId, result.reservation);
+        sweepConferenceRooms();
+        return;
+      }
+      if (msg.type === "conf-boot") {
+        if (needAccount()) return;
+        const roomKey = String(msg.roomId ?? "").trim();
+        const targetId = clampId(msg.peerId);
+        if (!roomKey || !targetId || targetId === selfId) return;
+        const live = liveReservation(roomKey);
+        if (!live || live.peerId !== selfId) {
+          send(ws, { type: "error", message: "not your meeting" });
+          return;
+        }
+        const dest = room!.get(targetId);
+        const conf = dest ? peerConference(dest.peer) : null;
+        if (!dest || conf?.id !== roomKey) {
+          send(ws, { type: "error", message: "they're not in this room" });
+          return;
+        }
+        admittedPeers(roomId, live.id).delete(targetId);
+        kickFromConference(room!, roomId, dest, conf, "denied");
+        return;
+      }
+      if (msg.type === "conf-join") {
+        const roomKey = String(msg.roomId ?? "").trim();
+        const result = joinReservation(roomKey, String(msg.code ?? ""));
+        if (!result.ok) {
+          send(ws, { type: "error", message: result.error });
+          return;
+        }
+        admittedPeers(roomId, result.reservation.id).add(selfId);
+        send(ws, { type: "conf-admit", reservationId: result.reservation.id, roomId: roomKey });
+        send(ws, {
+          type: "reserve",
+          reservation: viewReservation(
+            result.reservation,
+            selfId,
+            viewerAdmitted(roomId, selfId),
+          ),
+        });
         return;
       }
       if (msg.type === "knock-reply") {
@@ -886,6 +1277,7 @@ function attachRoom(httpServer: Server) {
     });
 
     ws.on("close", () => {
+      if (selfId) noteClose(selfId, ws);
       const slot = selfId ? room!.get(selfId) : undefined;
       if (!slot || slot.ws !== ws) return;
       const floor = peerFloor(slot.peer);
@@ -894,11 +1286,13 @@ function attachRoom(httpServer: Server) {
       const claims = claimsOf(roomId);
       const before = catalogOf(claims).floors;
       releasePeer(roomId, room!, selfId);
+      releaseSeat(roomId, selfId);
       broadcastFloor(room!, floor, selfId, { type: "leave", id: selfId });
       if (room!.size === 0) {
         rooms.delete(roomId);
         claimsByRoom.delete(roomId);
         whispersByRoom.delete(roomId);
+        seatsByRoom.delete(roomId);
         return;
       }
       if (!sameFloors(catalogOf(claims).floors, before)) publishFloors(room!, claims);
@@ -907,6 +1301,11 @@ function attachRoom(httpServer: Server) {
 
   httpServer.on("close", () => {
     httpServer.off("upgrade", onUpgrade);
+    if (confSweep) {
+      clearInterval(confSweep);
+      confSweep = null;
+    }
+    stopPresenceTick();
   });
 }
 

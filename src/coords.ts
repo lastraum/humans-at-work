@@ -1,7 +1,10 @@
 import type { FloorPlate, FurnitureItem } from "./types";
 
+/** Floor, walls, and furniture. People are not multiplied by this. */
+export const ENV_SCALE = 1.2;
+
 /** Claw3D canvas → world scale so the vendored GLBs sit at the right size. */
-export const SCALE = 0.018;
+export const SCALE = 0.018 * ENV_SCALE;
 
 export const FURNITURE_ROTATION: Record<string, number> = {};
 

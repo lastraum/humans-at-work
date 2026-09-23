@@ -1,18 +1,10 @@
-import { MAX_ID, MAX_NAME } from "./protocol";
+import { clampLook, SHIRTS, type AvatarLook } from "./avatarLook";
+import { MAX_ID, MAX_NAME, clampCompany, clampProfileUrl } from "./protocol";
 
 const ACCOUNT_KEY = "haw-identity";
 const TAB_KEY = "haw-tab-identity";
 
-const PALETTE = [
-  "#f4a261",
-  "#e76f51",
-  "#2a9d8f",
-  "#e9c46a",
-  "#9b5de5",
-  "#00bbf9",
-  "#f15bb5",
-  "#80b918",
-];
+const PALETTE = SHIRTS;
 
 export type Identity = {
   id: string;
@@ -21,6 +13,10 @@ export type Identity = {
   /** Session ETH address for DCL LiveKit. */
   address?: string;
   email?: string;
+  company?: string;
+  profileUrl?: string;
+  /** Saved avatar. Missing until they edit; the body still has a stable derived look. */
+  look?: AvatarLook;
 };
 
 function colorFor(id: string) {
@@ -46,6 +42,9 @@ function read(store: Storage, key: string): Identity | null {
       name: sanitizeName(parsed.name) || defaultName(parsed.id),
       color: parsed.color || colorFor(parsed.id),
       email: parsed.email,
+      company: clampCompany(parsed.company) || undefined,
+      profileUrl: clampProfileUrl(parsed.profileUrl) || undefined,
+      look: clampLook(parsed.look),
     };
   } catch {
     return null;
@@ -81,6 +80,9 @@ export function ensureIdentity(): Identity {
       existing.name = account.name || existing.name;
       existing.color = account.color || existing.color;
       existing.email = account.email;
+      existing.company = account.company || existing.company;
+      existing.profileUrl = account.profileUrl || existing.profileUrl;
+      existing.look = account.look ?? existing.look;
     }
     write(sessionStorage, TAB_KEY, existing);
     return existing;
@@ -90,6 +92,9 @@ export function ensureIdentity(): Identity {
     ident.name = account.name || ident.name;
     ident.color = account.color || ident.color;
     ident.email = account.email;
+    ident.company = account.company;
+    ident.profileUrl = account.profileUrl;
+    ident.look = account.look;
   } else {
     write(localStorage, ACCOUNT_KEY, ident);
   }
@@ -105,16 +110,32 @@ export function saveIdentity(ident: Identity) {
     name: ident.name,
     color: ident.color,
     email: ident.email,
+    company: ident.company,
+    profileUrl: ident.profileUrl,
+    look: ident.look,
   });
 }
 
 /** Adopt a signed-in account as this tab's identity (stable id across tabs). */
-export function applyAccount(user: { id: string; name: string; color: string; email: string }): Identity {
+export function applyAccount(user: {
+  id: string;
+  name: string;
+  color: string;
+  email: string;
+  company?: string;
+  profileUrl?: string;
+  look?: AvatarLook;
+}): Identity {
+  const prior = read(localStorage, ACCOUNT_KEY);
+  const look = clampLook(user.look) ?? (prior?.id === user.id ? prior.look : undefined);
   const ident: Identity = {
     id: user.id,
     name: sanitizeName(user.name) || defaultName(user.id),
-    color: user.color || colorFor(user.id),
+    color: look?.shirt || user.color || colorFor(user.id),
     email: user.email,
+    company: clampCompany(user.company) || undefined,
+    profileUrl: clampProfileUrl(user.profileUrl) || undefined,
+    look,
   };
   write(sessionStorage, TAB_KEY, ident);
   write(localStorage, ACCOUNT_KEY, ident);

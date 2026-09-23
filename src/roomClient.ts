@@ -1,3 +1,4 @@
+import { resolveLook, type AvatarLook } from "./avatarLook";
 import {
   ROOM_PATH,
   type ChatChannel,
@@ -27,7 +28,9 @@ export type RoomHandlers = {
     floor?: number,
     maxFloor?: number,
     floors?: number[],
+    xp?: number,
   ) => void;
+  onXp?: (xp: number) => void;
   onFloors?: (floor: number, maxFloor: number, floors: number[]) => void;
   onFloorView?: (view: {
     floor: number;
@@ -42,11 +45,13 @@ export type RoomHandlers = {
   onLeave: (id: string) => void;
   onMove: (id: string, x: number, y: number, facing?: number) => void;
   onState: (id: string, pose: Pose) => void;
-  onProfile: (id: string, name: string) => void;
+  onProfile: (id: string, name: string, company?: string, profileUrl?: string, look?: AvatarLook) => void;
   onClaim: (claim: Claim) => void;
   onReservations?: (reservations: ConferenceReservation[]) => void;
   onReserve?: (reservation: ConferenceReservation) => void;
   onCancelReserve?: (id: string) => void;
+  onConfAdmit?: (reservationId: string, roomId: string) => void;
+  onConfKick?: (roomId: string, reason: "ended" | "denied") => void;
   onRelease: (deskId: string, peerId: string) => void;
   onChat?: (id: string, name: string, text: string, channel: ChatChannel, deskId?: string) => void;
   onChatAvailable?: (id: string, on: boolean) => void;
@@ -92,13 +97,24 @@ export function connectRoom(opts: RoomHandlers) {
 
   const hello = () => {
     const pose = opts.getPose();
+    let timezone: string | undefined;
+    try {
+      timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+    } catch {
+      timezone = undefined;
+    }
+    const look = resolveLook(opts.identity);
     send({
       type: "hello",
       id: opts.identity.id,
       name: opts.identity.name,
-      color: opts.identity.color,
+      color: look.shirt,
       address: opts.identity.address,
+      company: opts.identity.company,
+      profileUrl: opts.identity.profileUrl,
+      look,
       token: opts.getToken?.() || undefined,
+      timezone,
       ...pose,
     });
   };
@@ -116,7 +132,9 @@ export function connectRoom(opts: RoomHandlers) {
         msg.floor,
         msg.maxFloor,
         msg.floors,
+        msg.xp ?? 0,
       );
+      opts.onXp?.(msg.xp ?? 0);
       opts.onReservations?.(msg.reservations ?? []);
       status();
       return;
@@ -160,7 +178,11 @@ export function connectRoom(opts: RoomHandlers) {
       return;
     }
     if (msg.type === "profile") {
-      opts.onProfile(msg.id, msg.name);
+      opts.onProfile(msg.id, msg.name, msg.company, msg.profileUrl, msg.look);
+      return;
+    }
+    if (msg.type === "xp") {
+      opts.onXp?.(msg.xp);
       return;
     }
     if (msg.type === "claim") {
@@ -227,6 +249,14 @@ export function connectRoom(opts: RoomHandlers) {
       opts.onCancelReserve?.(msg.id);
       return;
     }
+    if (msg.type === "conf-admit") {
+      opts.onConfAdmit?.(msg.reservationId, msg.roomId);
+      return;
+    }
+    if (msg.type === "conf-kick") {
+      opts.onConfKick?.(msg.roomId, msg.reason);
+      return;
+    }
     if (msg.type === "office-ad") {
       opts.onOfficeAd?.(msg.deskId, msg.peerId, msg.ad);
       return;
@@ -286,8 +316,8 @@ export function connectRoom(opts: RoomHandlers) {
     sendState(pose: Pose) {
       send({ type: "state", ...pose });
     },
-    sendProfile(name: string) {
-      send({ type: "profile", name });
+    sendProfile(name: string, company?: string, profileUrl?: string, look?: AvatarLook) {
+      send({ type: "profile", name, company, profileUrl, color: look?.shirt, look });
     },
     sendClaim(deskId: string, timezone?: string) {
       send({ type: "claim", deskId, timezone });
@@ -295,11 +325,26 @@ export function connectRoom(opts: RoomHandlers) {
     sendTimezone(tz: string | null) {
       send({ type: "timezone", tz });
     },
-    sendReserve(roomId: string, day: string, startMin: number, durationMin: 30 | 60) {
-      send({ type: "reserve", roomId, day, startMin, durationMin });
+    sendReserve(
+      roomId: string,
+      day: string,
+      startMin: number,
+      durationMin: 30 | 60,
+      access?: "open" | "code",
+    ) {
+      send({ type: "reserve", roomId, day, startMin, durationMin, access });
     },
     sendCancelReserve(id: string) {
       send({ type: "cancel-reserve", id });
+    },
+    sendConfAccess(id: string, access: "open" | "code") {
+      send({ type: "conf-access", id, access });
+    },
+    sendConfJoin(roomId: string, code: string) {
+      send({ type: "conf-join", roomId, code });
+    },
+    sendConfBoot(roomId: string, peerId: string) {
+      send({ type: "conf-boot", roomId, peerId });
     },
     sendRelease() {
       send({ type: "release" });
@@ -339,6 +384,9 @@ export function connectRoom(opts: RoomHandlers) {
     },
     sendFloor(floor: number) {
       send({ type: "floor", floor });
+    },
+    sendShiftHold() {
+      send({ type: "shift-hold" });
     },
     identify() {
       hello();

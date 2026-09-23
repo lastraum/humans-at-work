@@ -1,9 +1,9 @@
 import "./style.css";
 import * as THREE from "three";
-import { recordPageView } from "./metrics";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import plateJson from "../data/floor-plate.json";
-import { createAvatar, createAvatars, setAvatarName, setNameTagVisible } from "./createAvatars";
+import { clampLook, resolveLook, sameLook, type AvatarLook } from "./avatarLook";
+import { createAvatar, createAvatars, restyleAvatar, setAvatarName, setNameTagVisible, updateAvatars } from "./createAvatars";
 import {
   createConferences,
   createCubicles,
@@ -11,9 +11,10 @@ import {
   createOffices,
   createRecreations,
 } from "./createOffice";
-import { createGround, createWallsAndDoors } from "./createPlate";
+import { cameraPanBounds, createGround, createWallsAndDoors, setHingedDoorOpen } from "./createPlate";
 import { attachCameraPan } from "./cameraPan";
-import { attachDesks, type Desk } from "./desks";
+import { applyConferencePlate, attachDesks, type Desk } from "./desks";
+import { pickOfficeAd } from "./officeAds";
 import { attachEditor } from "./editor";
 import { fromWorld, toWorld } from "./coords";
 import { FIRST_FLOOR, floorName } from "./floors";
@@ -27,6 +28,7 @@ import {
   readToken,
   restoreAccount,
   saveAccountName,
+  saveAccountProfile,
   saveBlock,
   saveOfficeAd,
   startEmailCode,
@@ -38,7 +40,7 @@ import { DCL_WORLD } from "./dcl/worldHandshake";
 import { addBlocked, readBlocked, removeBlocked, writeBlocked } from "./blocks";
 import { applyAccount, clearAccountEmail, ensureIdentity, saveIdentity, sanitizeName } from "./identity";
 import { attachMac } from "./mac";
-import type { Privacy } from "./protocol";
+import { clampCompany, clampProfileUrl, type Privacy } from "./protocol";
 import { loadFurniture } from "./loadFurniture";
 import { attachClickVfx } from "./clickVfx";
 import { attachOfficePrompt } from "./officePrompt";
@@ -49,19 +51,26 @@ import { connectRoom } from "./roomClient";
 import {
   attachConferenceReserve,
   activeTimeZone,
+  canEnterConference,
+  conferenceApproach,
   conferenceAtCell,
+  conferenceCenter,
+  conferenceNotice,
   nextBookingLabel,
   pickConferenceGroup,
-  ptDayKey,
+  pickConferenceNotice,
+  prettyRoom,
   shareTimezone,
 } from "./conferenceReserve";
 import { compressOfficeAd } from "./officeAdImage";
 import type { ConferenceReservation, OfficeAd } from "./protocol";
+import { playChatSound, playChime } from "./chatSounds";
 import { connectWorldChat } from "./worldChat";
 import { libraryAtCell, poseInQuietZone, setAmbientSilent } from "./quietZone";
-import type { Avatar, FloorPlate } from "./types";
+import { GUEST_SHIFT_MS, XP_PER_MINUTE } from "./xp";
+import type { Avatar, FloorPlate, OfficeInstance } from "./types";
 
-recordPageView();
+document.body.classList.add("ready");
 
 async function loadPlate(): Promise<FloorPlate> {
   const urls = [`/floor-plate.json?t=${Date.now()}`, `/__floor-plate?t=${Date.now()}`];
@@ -80,8 +89,8 @@ async function loadPlate(): Promise<FloorPlate> {
 
 const canvas = document.querySelector<HTMLCanvasElement>("#c")!;
 const status = document.querySelector("#status")!;
-const editToggle = document.querySelector<HTMLButtonElement>("#edit-toggle")!;
-const zoomReadout = document.querySelector("#zoom-readout")!;
+const hudXp = document.querySelector<HTMLElement>("#hud-xp")!;
+const hudClock = document.querySelector<HTMLElement>("#hud-clock")!;
 const peekEl = document.querySelector<HTMLElement>("#mac-peek")!;
 const peekTitle = document.querySelector("#mac-peek-title")!;
 const peekName = document.querySelector("#mac-peek-name")!;
@@ -89,9 +98,17 @@ const peekMeta = document.querySelector("#mac-peek-meta")!;
 const personCard = document.querySelector<HTMLElement>("#person-card")!;
 const personCardTitle = document.querySelector("#person-card-title")!;
 const personCardName = document.querySelector("#person-card-name")!;
+const personCardPhoto = document.querySelector<HTMLImageElement>("#person-card-photo")!;
+const personCardCompany = document.querySelector<HTMLElement>("#person-card-company")!;
+const personCardLink = document.querySelector<HTMLAnchorElement>("#person-card-link")!;
 const personCardMeta = document.querySelector<HTMLElement>("#person-card-meta")!;
 const personCardNote = document.querySelector<HTMLElement>("#person-card-note")!;
 const personCardActions = document.querySelector<HTMLElement>("#person-card-actions")!;
+const adVisit = document.querySelector<HTMLElement>("#ad-visit")!;
+const adVisitName = document.querySelector("#ad-visit-name")!;
+const adVisitCompany = document.querySelector<HTMLElement>("#ad-visit-company")!;
+const adVisitHint = document.querySelector<HTMLElement>("#ad-visit-hint")!;
+const adVisitGo = document.querySelector<HTMLButtonElement>("#ad-visit-go")!;
 let inspectPerson: ((id: string, name: string) => void) | null = null;
 let hidePersonCard: (() => void) | null = null;
 let personNote: ((text: string) => void) | null = null;
@@ -102,6 +119,8 @@ const claimShiftDesk = document.querySelector("#claim-shift-desk")!;
 const dayEndHello = document.querySelector("#day-end-hello")!;
 const dayEndIn = document.querySelector("#day-end-in")!;
 const dayEndTime = document.querySelector("#day-end-time")!;
+const dayEndShiftXp = document.querySelector("#day-end-shift-xp")!;
+const dayEndTotalXp = document.querySelector("#day-end-total-xp")!;
 const dayEndDesk = document.querySelector("#day-end-desk")!;
 const dayEndGo = document.querySelector<HTMLButtonElement>("#day-end-go")!;
 const dayEndHome = document.querySelector<HTMLButtonElement>("#day-end-home")!;
@@ -121,6 +140,110 @@ let maxFloor = FIRST_FLOOR;
 let openFloors = [FIRST_FLOOR];
 let pendingFloorRide: number | null = null;
 let shiftStartedAt: number | null = null;
+let shiftPausedMs: number | null = null;
+let bankedXp = 0;
+let clockShown = "";
+let guestShiftHeld = false;
+let guestVisitSpent = false;
+let guestHoldPending = false;
+let holdGuestShift: (() => void) | null = null;
+const GUEST_SPENT_KEY = "haw-guest-spent";
+
+function markGuestSpent() {
+  guestVisitSpent = true;
+  try {
+    localStorage.setItem(GUEST_SPENT_KEY, "1");
+  } catch {
+    /* private mode */
+  }
+}
+
+function clearGuestSpent() {
+  guestVisitSpent = false;
+  try {
+    localStorage.removeItem(GUEST_SPENT_KEY);
+  } catch {
+    /* private mode */
+  }
+}
+
+function readGuestSpent() {
+  try {
+    return localStorage.getItem(GUEST_SPENT_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+let onGuestExpired: (() => void) | null = null;
+const guestOver = document.querySelector<HTMLElement>("#guest-over")!;
+const guestOverActions = document.querySelector<HTMLElement>("#guest-over-actions")!;
+const guestOverAuth = document.querySelector<HTMLElement>("#guest-over-auth")!;
+
+function shiftElapsedMs() {
+  if (shiftPausedMs != null) return shiftPausedMs;
+  if (shiftStartedAt == null) return 0;
+  return Math.max(0, Date.now() - shiftStartedAt);
+}
+
+function formatClock(ms: number) {
+  const sec = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  const ss = String(s).padStart(2, "0");
+  if (h) return `${h}:${String(m).padStart(2, "0")}:${ss}`;
+  return `${m}:${ss}`;
+}
+
+function paintYouHud() {
+  hudXp.textContent = `${bankedXp.toLocaleString("en-US")} XP`;
+  const label = formatClock(shiftElapsedMs());
+  if (label === clockShown) return;
+  clockShown = label;
+  hudClock.textContent = label;
+}
+
+function pauseShiftClock() {
+  if (shiftPausedMs != null) return;
+  shiftPausedMs = shiftStartedAt == null ? 0 : Math.max(0, Date.now() - shiftStartedAt);
+  shiftStartedAt = null;
+  clockShown = "";
+  paintYouHud();
+}
+
+function resumeShiftClock() {
+  if (shiftPausedMs == null) return;
+  shiftStartedAt = Date.now() - shiftPausedMs;
+  shiftPausedMs = null;
+  clockShown = "";
+  paintYouHud();
+}
+
+function clearShiftClock() {
+  shiftStartedAt = null;
+  shiftPausedMs = null;
+  clockShown = "";
+  paintYouHud();
+}
+
+function dismissGuestOver() {
+  guestShiftHeld = false;
+  guestOver.hidden = true;
+  guestOverAuth.hidden = true;
+  guestOverActions.hidden = false;
+}
+
+function releaseGuestHold() {
+  const wasHeld = guestShiftHeld || shiftPausedMs != null;
+  dismissGuestOver();
+  clearGuestSpent();
+  if (wasHeld) resumeShiftClock();
+}
+
+function setHudXp(xp: number) {
+  bankedXp = Math.max(0, Math.floor(Number(xp) || 0));
+  paintYouHud();
+}
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -144,7 +267,7 @@ const camera = new THREE.OrthographicCamera(
   0.1,
   400,
 );
-camera.position.set(52, 58, -52);
+camera.position.set(52, 58, 52);
 camera.lookAt(0, 0, 0);
 
 const controls = new OrbitControls(camera, canvas);
@@ -187,21 +310,19 @@ const pointer = new THREE.Vector2();
 let playerCtl: {
   update: (dt: number) => void;
   pose: () => Pose;
-  goSit: (seat: { x: number; y: number; facing: number }) => void;
+  goSit: (seat: { x: number; y: number; facing: number; seatId?: string; seatY?: number }) => void;
   goTo: (x: number, y: number, force?: boolean) => boolean;
   stand: () => void;
   moving: () => boolean;
+  setCellBlocked: (fn: ((col: number, row: number) => boolean) | null) => void;
 } | null = null;
-let camCtl: { update: (dt: number) => void } | null = null;
+let camCtl: { update: (dt: number) => void; rotating?: () => boolean; clamp?: () => void } | null = null;
 let clickVfx: { spawn: (x: number, z: number) => void; update: (dt: number) => void } | null =
   null;
 let promptCtl: ReturnType<typeof attachOfficePrompt> | null = null;
 let livePlate: FloorPlate | null = null;
 let leaveArmed = false;
 let pendingKnock: Desk | null = null;
-let botWaiting = false;
-let onBotArrived: (() => void) | null = null;
-const BOT_ID = "debug-bot";
 let elevX = 0;
 let elevZ = 0;
 let clockOut: ((home?: boolean) => void) | null = null;
@@ -209,12 +330,24 @@ let macCtl: ReturnType<typeof attachMac> | null = null;
 let worldChatCtl: ReturnType<typeof connectWorldChat> | null = null;
 let remotesCtl: {
   update: (dt: number) => void;
-  poses: () => { id: string; name: string; x: number; y: number; col?: number; row?: number }[];
+  poses: () => {
+    id: string;
+    name: string;
+    x: number;
+    y: number;
+    col?: number;
+    row?: number;
+    pose?: "sit" | "stand";
+    seatId?: string;
+  }[];
   avatars: () => { id: string; group: THREE.Object3D; col?: number; row?: number }[];
   moving: (id: string) => boolean;
   spawn: (peer: import("./protocol").Peer) => void;
   walkTo: (id: string, x: number, y: number) => void;
-  walkToSit: (id: string, seat: { x: number; y: number; facing: number }) => void;
+  walkToSit: (
+    id: string,
+    seat: { x: number; y: number; facing: number; seatId?: string; seatY?: number },
+  ) => void;
   remove: (id: string) => void;
   clear: () => void;
   pick: (
@@ -223,7 +356,9 @@ let remotesCtl: {
   ) => { id: string; name: string; x: number; y: number; distance: number } | null;
 } | null = null;
 let desksCtl: ReturnType<typeof attachDesks> | null = null;
-let projectConfBadges: (() => void) | null = null;
+let syncConferencePresence:
+  | ((you: { x: number; y: number; col?: number; row?: number }) => void)
+  | null = null;
 let confHoverLabel: ((col: number, row: number) => string | null) | null = null;
 let selfId = "";
 let selfName = "";
@@ -288,6 +423,7 @@ loadPlate()
       cubiclesRoot,
       recreationsRoot,
       librariesRoot,
+      conferencesRoot,
       looseRoot: loose,
     });
     desksCtl = desks;
@@ -298,6 +434,7 @@ loadPlate()
       camera,
       controls,
       pad: document.querySelector("#cam-pad"),
+      getBounds: () => (livePlate ? cameraPanBounds(livePlate) : null),
     });
 
     const editor = attachEditor({
@@ -356,12 +493,51 @@ loadPlate()
       col: spawn.col,
       row: spawn.row,
       color: identity.color,
+      look: identity.look,
     };
     const you = createAvatar(youAvatar, plate, {
       editable: false,
       label: identity.name,
     });
     avatarsRoot.add(you);
+
+    const wornLook = () => resolveLook(identity);
+    const showLook = () => {
+      youAvatar.look = identity.look;
+      youAvatar.color = identity.color;
+      restyleAvatar(you);
+      macCtl?.setLook(wornLook());
+    };
+    const adoptUser = (user: {
+      id: string;
+      name: string;
+      color: string;
+      email: string;
+      company?: string;
+      profileUrl?: string;
+      look?: AvatarLook;
+    }) => {
+      const look = clampLook(user.look) ?? identity.look;
+      identity.id = user.id;
+      identity.name = sanitizeName(user.name) || identity.name;
+      identity.email = user.email;
+      identity.company = user.company;
+      identity.profileUrl = user.profileUrl;
+      identity.look = look;
+      identity.color = look?.shirt || user.color || identity.color;
+      applyAccount({
+        id: identity.id,
+        name: identity.name,
+        email: identity.email,
+        color: identity.color,
+        company: identity.company,
+        profileUrl: identity.profileUrl,
+        look,
+      });
+      youAvatar.id = identity.id;
+      youAvatar.name = identity.name;
+      showLook();
+    };
 
     const remotes = attachRemoteHumans({
       plate,
@@ -397,12 +573,30 @@ loadPlate()
 
     let worldChat: ReturnType<typeof connectWorldChat> | null = null;
     let welcomed = false;
+    const pendingWhisperSound = new Map<string, string>();
+    const inConferencePose = (
+      conf: { col: number; row: number; cols?: number; rows?: number },
+      pose: { col?: number; row?: number; x: number; y: number },
+    ) => {
+      const col = pose.col ?? Math.floor(pose.x / plate.grid.cellSize);
+      const row = pose.row ?? Math.floor(pose.y / plate.grid.cellSize);
+      const w = conf.cols ?? 1;
+      const h = conf.rows ?? 1;
+      return col >= conf.col && col < conf.col + w && row >= conf.row && row < conf.row + h;
+    };
     const officeChatTargets = (deskId: string) => {
       const desk = desks.get(deskId);
-      if (!desk) return [];
       const ids: string[] = [];
+      if (desk) {
+        for (const pose of remotes.poses()) {
+          if (desks.contains(desk, pose) && pose.address) ids.push(pose.address);
+        }
+        return ids;
+      }
+      const conf = (plate.conferences ?? []).find((room) => room.id === deskId);
+      if (!conf) return [];
       for (const pose of remotes.poses()) {
-        if (desks.contains(desk, pose) && pose.address) ids.push(pose.address);
+        if (inConferencePose(conf, pose) && pose.address) ids.push(pose.address);
       }
       return ids;
     };
@@ -459,12 +653,64 @@ loadPlate()
       paintFloorRoster();
     };
 
+    const faces = new Map<string, { company?: string; profileUrl?: string; image?: string }>();
+    const rememberFace = (
+      id: string,
+      patch: { company?: string; profileUrl?: string; image?: string },
+      fill = false,
+    ) => {
+      if (!id) return;
+      const prev = faces.get(id) ?? {};
+      const next = { ...prev };
+      if (patch.company !== undefined && (!fill || patch.company)) next.company = patch.company || undefined;
+      if (patch.profileUrl !== undefined && (!fill || patch.profileUrl)) {
+        next.profileUrl = patch.profileUrl || undefined;
+      }
+      if (patch.image !== undefined) next.image = patch.image || undefined;
+      faces.set(id, next);
+    };
+    const faceOf = (id: string) => {
+      const claim = desks.mine(id);
+      const saved = faces.get(id);
+      const remote = remotes.profile(id);
+      const ad = claim?.officeAd;
+      return {
+        company: claim?.company || saved?.company || remote?.company || "",
+        profileUrl: claim?.profileUrl || saved?.profileUrl || remote?.profileUrl || "",
+        image: (ad?.enabled && ad.url) || saved?.image || "",
+      };
+    };
+    const notePeer = (peer: { id: string; company?: string; profileUrl?: string }) => {
+      rememberFace(peer.id, { company: peer.company ?? "", profileUrl: peer.profileUrl ?? "" }, true);
+    };
+    const noteClaim = (claim: { peerId: string; company?: string; profileUrl?: string; officeAd?: OfficeAd }) => {
+      rememberFace(claim.peerId, {
+        company: claim.company ?? "",
+        profileUrl: claim.profileUrl ?? "",
+        image: claim.officeAd?.enabled && claim.officeAd.url ? claim.officeAd.url : undefined,
+      });
+    };
+
     const applyDeskAd = (deskId: string, peerId: string, ad: OfficeAd | null) => {
       const claim = desks.claimOf(deskId);
       if (!claim || claim.peerId !== peerId) return;
       if (ad?.enabled && ad.url) claim.officeAd = ad;
       else delete claim.officeAd;
       desks.apply(claim);
+      rememberFace(peerId, { image: ad?.enabled && ad.url ? ad.url : "" });
+      if (!personCard.hidden && personCard.dataset.id === peerId) paintPersonPhoto(peerId);
+    };
+    const paintPersonPhoto = (peerId: string) => {
+      const src = faceOf(peerId).image;
+      if (!src) {
+        personCardPhoto.hidden = true;
+        personCardPhoto.removeAttribute("src");
+        personCardPhoto.alt = "";
+        return;
+      }
+      personCardPhoto.alt = desks.mine(peerId)?.name || "Profile";
+      if (personCardPhoto.getAttribute("src") !== src) personCardPhoto.src = src;
+      personCardPhoto.hidden = false;
     };
     const paintOwnOfficeAd = () => {
       const mine = desks.mine(identity.id);
@@ -483,56 +729,38 @@ loadPlate()
 
     let reservations: ConferenceReservation[] = [];
     let confReserve: ReturnType<typeof attachConferenceReserve> | null = null;
-    const badgeLayer = document.createElement("div");
-    badgeLayer.id = "conf-badges";
-    document.body.appendChild(badgeLayer);
-    const badgeById = new Map<string, HTMLDivElement>();
-    const scratchBox = new THREE.Box3();
-    const scratchVec = new THREE.Vector3();
+    const confGroup = (id: string) =>
+      [...conferencesRoot.children].find((child) => child.userData?.conference?.id === id) ?? null;
+    const paintConfDoors = () => {
+      for (const child of conferencesRoot.children) {
+        const conf = child.userData?.conference as { id?: string } | undefined;
+        if (!conf?.id) continue;
+        let door: THREE.Object3D | null = null;
+        child.traverse((node) => {
+          if (door) return;
+          const item = node.userData?.item as { type?: string } | undefined;
+          if (node.userData?.isDoor || item?.type === "door") door = node;
+        });
+        if (door) {
+          const open = canEnterConference(reservations, conf.id, identity.id);
+          setHingedDoorOpen(door, open ? 0.38 : 0);
+        }
+      }
+    };
     const paintConfBadges = () => {
       for (const child of conferencesRoot.children) {
         const conf = child.userData?.conference as { id?: string } | undefined;
         if (!conf?.id) continue;
-        const label = nextBookingLabel(reservations, conf.id);
-        child.userData.confLabel = label;
-        let el = badgeById.get(conf.id);
-        if (!el) {
-          el = document.createElement("div");
-          el.className = "conf-badge";
-          badgeLayer.appendChild(el);
-          badgeById.set(conf.id, el);
-        }
-        el.textContent = label;
-        el.hidden = !label;
-        el.dataset.busy = label.startsWith("In use") ? "1" : "0";
+        const notice = conferenceNotice(reservations, conf.id);
+        child.userData.confLabel = nextBookingLabel(reservations, conf.id);
+        applyConferencePlate(child, notice);
       }
+      paintConfDoors();
     };
-    projectConfBadges = () => {
-      if (editor.enabled()) {
-        badgeLayer.hidden = true;
-        return;
-      }
-      badgeLayer.hidden = false;
-      const rect = canvas.getBoundingClientRect();
-      const projectBadge = (child: THREE.Object3D, id: string) => {
-        const el = badgeById.get(id);
-        if (!el || el.hidden) return;
-        scratchBox.setFromObject(child);
-        scratchBox.getCenter(scratchVec);
-        scratchVec.y = scratchBox.max.y + 0.15;
-        scratchVec.project(camera);
-        const behind = scratchVec.z > 1;
-        el.style.display = behind ? "none" : "block";
-        if (behind) return;
-        const x = (scratchVec.x * 0.5 + 0.5) * rect.width + rect.left;
-        const y = (-scratchVec.y * 0.5 + 0.5) * rect.height + rect.top;
-        el.style.left = `${x}px`;
-        el.style.top = `${y}px`;
-      };
-      for (const child of conferencesRoot.children) {
-        const conf = child.userData?.conference as { id?: string } | undefined;
-        if (conf?.id) projectBadge(child, conf.id);
-      }
+    const conferenceBlocked = (col: number, row: number) => {
+      const conf = conferenceAtCell(plate, col, row);
+      if (!conf) return false;
+      return !canEnterConference(reservations, conf.id, identity.id);
     };
     confHoverLabel = (col, row) => {
       if (libraryAtCell(plate, col, row)) return "Library";
@@ -603,8 +831,28 @@ loadPlate()
       document.head.appendChild(script);
     };
 
+    let parkedOutside = false;
+    let identifyRoom: (() => void) | null = null;
+
+    const placeAt = (x: number, y: number) => {
+      playerCtl?.stand();
+      playerCtl?.goTo(x, y, true);
+      const pose = playerCtl?.pose();
+      if (!pose) return;
+      const plateNow = livePlate ?? plate;
+      const [wx, , wz] = toWorld(pose.x, pose.y, plateNow);
+      centerCameraOn(wx, wz);
+      controls.update();
+    };
+
     const enterFloor = () => {
+      parkedOutside = false;
+      dismissGuestOver();
+      shiftPausedMs = null;
       shiftStartedAt = Date.now();
+      clockShown = "";
+      paintYouHud();
+      playChime("shift");
       joinGate.hidden = true;
       document.querySelector("#mac")?.classList.remove("collapsed");
       const spawn = elevatorSpawn(plate);
@@ -614,6 +862,11 @@ loadPlate()
       if (pose) {
         const [wx, , wz] = toWorld(pose.x, pose.y, plate);
         centerCameraOn(wx, wz);
+      }
+      if (isSignedIn()) clearGuestSpent();
+      else if (guestVisitSpent || readGuestSpent()) {
+        if (holdGuestShift) holdGuestShift();
+        else guestHoldPending = true;
       }
     };
 
@@ -667,6 +920,7 @@ loadPlate()
               guestId: identity.id,
               name: identity.name,
               color: identity.color,
+              look: wornLook(),
             }).then(async (result) => {
               if (!result.ok) {
                 setJoinHint(result.error || "Google sign-in failed");
@@ -675,6 +929,8 @@ loadPlate()
               const wallet = await ensureSessionWallet(result.token, true);
               await bindSessionWallet(wallet.address);
               guest = wallet;
+              adoptUser(result.user);
+              identity.address = wallet.address;
               session = {
                 user: result.user,
                 token: result.token,
@@ -682,20 +938,11 @@ loadPlate()
                 blocked: [...blocked],
                 officeAd: officeAdState,
               };
-              applyAccount(result.user);
-              identity.id = result.user.id;
-              identity.name = sanitizeName(result.user.name) || identity.name;
-              identity.color = result.user.color || identity.color;
-              identity.email = result.user.email;
-              identity.address = wallet.address;
-              youAvatar.id = identity.id;
-              youAvatar.name = identity.name;
-              youAvatar.color = identity.color;
-              setAvatarName(you, identity.name);
               selfId = identity.id;
               selfName = identity.name;
               selfSignedIn = true;
               finish();
+              identifyRoom?.();
             });
           });
         });
@@ -734,6 +981,7 @@ loadPlate()
             guestId: identity.id,
             name: identity.name,
             color: identity.color,
+            look: wornLook(),
           }).then(async (result) => {
             joinVerify.disabled = false;
             if (!result.ok) {
@@ -743,6 +991,8 @@ loadPlate()
             const wallet = await ensureSessionWallet(result.token, true);
             await bindSessionWallet(wallet.address);
             guest = wallet;
+            adoptUser(result.user);
+            identity.address = wallet.address;
             session = {
               user: result.user,
               token: result.token,
@@ -750,20 +1000,11 @@ loadPlate()
               blocked: [...blocked],
               officeAd: officeAdState,
             };
-            applyAccount(result.user);
-            identity.id = result.user.id;
-            identity.name = sanitizeName(result.user.name) || identity.name;
-            identity.color = result.user.color || identity.color;
-            identity.email = result.user.email;
-            identity.address = wallet.address;
-            youAvatar.id = identity.id;
-            youAvatar.name = identity.name;
-            youAvatar.color = identity.color;
-            setAvatarName(you, identity.name);
             selfId = identity.id;
             selfName = identity.name;
             selfSignedIn = true;
             finish();
+            identifyRoom?.();
           });
         });
       }
@@ -774,7 +1015,7 @@ loadPlate()
       identity,
       getToken: () => readToken(),
       getPose: () => playerCtl?.pose() ?? youAvatar,
-      onWelcome: (peers, self, claims, mineBlocked, mineBlockedBy, officeAds, floor, openMax, floors) => {
+      onWelcome: (peers, self, claims, mineBlocked, mineBlockedBy, officeAds, floor, openMax, floors, xp) => {
         if (mineBlocked?.length) {
           blocked = new Set(mineBlocked);
           writeBlocked(mineBlocked);
@@ -790,13 +1031,16 @@ loadPlate()
         if (self.chatAvailable) chatAvailable.set(self.id, true);
         for (const peer of peers) {
           remotes.spawn(peer);
+          notePeer(peer);
           chatAvailable.set(peer.id, Boolean(peer.chatAvailable));
         }
         desks.applyAll(claims);
+        for (const claim of claims) noteClaim(claim);
         for (const ad of officeAds ?? []) applyDeskAd(ad.deskId, ad.peerId, ad);
         paintFloorRoster();
         syncMacDesk();
         paintFloorHud();
+        setHudXp(xp ?? 0);
         if (welcomed) return;
         welcomed = true;
         const mine = desks.mine(identity.id);
@@ -822,9 +1066,11 @@ loadPlate()
         remotes.clear();
         for (const peer of view.peers) {
           remotes.spawn(peer);
+          notePeer(peer);
           chatAvailable.set(peer.id, Boolean(peer.chatAvailable));
         }
         desks.applyAll(view.claims);
+        for (const claim of view.claims) noteClaim(claim);
         for (const ad of view.officeAds ?? []) applyDeskAd(ad.deskId, ad.peerId, ad);
         paintFloorRoster();
         syncMacDesk();
@@ -842,6 +1088,7 @@ loadPlate()
       },
       onJoin: (peer) => {
         remotes.spawn(peer);
+        notePeer(peer);
         chatAvailable.set(peer.id, Boolean(peer.chatAvailable));
         paintFloorRoster();
       },
@@ -853,40 +1100,102 @@ loadPlate()
       },
       onMove: (id, x, y) => remotes.walkTo(id, x, y),
       onState: (id, pose) => remotes.correct(id, pose),
-      onProfile: (id, name) => {
+      onXp: (xp) => {
+        setHudXp(xp);
+      },
+      onProfile: (id, name, company, profileUrl, look) => {
         remotes.rename(id, name);
         desks.rename(id, name);
+        const mine = desks.mine(id);
+        rememberFace(id, { company: company || "", profileUrl: profileUrl || "" });
+        remotes.setProfile(id, company, profileUrl);
+        const worn = clampLook(look);
+        if (worn) remotes.setLook(id, worn);
+        if (mine) {
+          mine.company = company || undefined;
+          mine.profileUrl = profileUrl || undefined;
+          desks.apply(mine);
+        }
         mac.renameSpeaker(id, name);
         if (personCard.dataset.id === id) {
           personCard.dataset.name = name;
           personCardName.textContent = name;
+          const companyName = company || "";
+          personCardCompany.hidden = !companyName;
+          personCardCompany.textContent = companyName;
+          const url = profileUrl || "";
+          if (url) {
+            personCardLink.hidden = false;
+            personCardLink.href = url;
+            personCardLink.textContent = url.replace(/^https?:\/\//, "");
+          } else {
+            personCardLink.hidden = true;
+            personCardLink.removeAttribute("href");
+            personCardLink.textContent = "";
+          }
         }
         paintFloorRoster();
       },
       onReservations: (list) => {
         reservations = list;
         paintConfBadges();
+        playerCtl?.setCellBlocked(conferenceBlocked);
         confReserve?.refresh();
       },
       onReserve: (reservation) => {
+        const prev = reservations.find((row) => row.id === reservation.id);
         reservations = [
           ...reservations.filter((row) => row.id !== reservation.id),
-          reservation,
+          {
+            ...reservation,
+            admitted: reservation.admitted || prev?.admitted,
+            code: reservation.code ?? (reservation.peerId === identity.id ? prev?.code : undefined),
+          },
         ];
         paintConfBadges();
+        playerCtl?.setCellBlocked(conferenceBlocked);
         confReserve?.refresh();
         if (reservation.peerId === identity.id) {
-          status.textContent = `booked ${reservation.day}`;
-          confReserve?.hide();
+          status.textContent =
+            reservation.access === "code" && reservation.code
+              ? `booked · code ${reservation.code}`
+              : `booked ${reservation.day}`;
+          if (reservation.access !== "code") confReserve?.hide();
         }
       },
       onCancelReserve: (id) => {
         reservations = reservations.filter((row) => row.id !== id);
         paintConfBadges();
+        playerCtl?.setCellBlocked(conferenceBlocked);
         confReserve?.refresh();
         status.textContent = "reservation canceled";
       },
+      onConfAdmit: (reservationId, roomId) => {
+        reservations = reservations.map((row) =>
+          row.id === reservationId ? { ...row, admitted: true } : row,
+        );
+        paintConfBadges();
+        playerCtl?.setCellBlocked(conferenceBlocked);
+        const room = (plate.conferences ?? []).find((item) => item.id === roomId);
+        if (room) {
+          const at = conferenceCenter(room, plate);
+          playerCtl?.goTo(at.x, at.y);
+        }
+        confReserve?.hideJoin();
+        status.textContent = "conference unlocked";
+      },
+      onConfKick: (roomId, reason) => {
+        const group = confGroup(roomId);
+        const at = group
+          ? conferenceApproach(group, plate)
+          : { x: 0, y: 0 };
+        if (group) playerCtl?.goTo(at.x, at.y, true);
+        playerCtl?.setCellBlocked(conferenceBlocked);
+        paintConfBadges();
+        status.textContent = reason === "ended" ? "conference ended" : "conference is locked";
+      },
       onClaim: (claim) => {
+        noteClaim(claim);
         desks.apply(claim);
         paintFloorRoster();
         syncMacDesk();
@@ -907,7 +1216,9 @@ loadPlate()
         if (isMuted(id)) return;
         const you = playerCtl?.pose();
         if (you && poseInQuietZone(plate, you)) return;
-        mac.addChat(name, text, id === identity.id, channel, deskId, id);
+        const mine = id === identity.id;
+        if (!mine) playChatSound(channel === "office" ? "office" : "floor");
+        mac.addChat(name, text, mine, channel, deskId, id);
       },
       onChatAvailable: (id, on) => {
         chatAvailable.set(id, on);
@@ -915,6 +1226,8 @@ loadPlate()
       },
       onWhisperRequest: (fromId, fromName, text) => {
         if (blocked.has(fromId) || isMuted(fromId)) return;
+        pendingWhisperSound.set(fromId, text ?? "");
+        playChatSound("whisper");
         mac.addWhisperRequest(fromId, fromName, text);
       },
       onWhisperOpen: (peerId, name) => {
@@ -922,6 +1235,11 @@ loadPlate()
       },
       onWhisper: (id, name, text, peerId) => {
         if (isMuted(id) && id !== identity.id) return;
+        if (id !== identity.id) {
+          const echoed = pendingWhisperSound.get(id) === text;
+          if (echoed) pendingWhisperSound.delete(id);
+          else playChatSound("whisper");
+        }
         mac.addWhisper(name, text, peerId, id === identity.id, id);
       },
       onWhisperEnd: (peerId, reason) => {
@@ -970,12 +1288,18 @@ loadPlate()
           status.textContent = "that desk is taken";
           return;
         }
+        if (message === "seat taken") {
+          playerCtl?.stand();
+          status.textContent = "that seat is taken";
+          return;
+        }
         if (message === "not available to chat" || message === "not available for whispers") {
           macCtl?.failWhisper();
           personNote?.("they're not available for whispers");
           return;
         }
         status.textContent = message;
+        if (confReserve?.isJoinOpen()) confReserve.joinError(message);
         const err = document.querySelector("#conf-reserve-error");
         if (err && confReserve?.isOpen()) err.textContent = message;
         confReserve?.refresh();
@@ -984,6 +1308,7 @@ loadPlate()
         if (text === "offline") status.textContent = "offline";
       },
     });
+    identifyRoom = () => room.identify();
 
     paintConfBadges();
 
@@ -992,20 +1317,104 @@ loadPlate()
       getPeerId: () => identity.id,
       isSignedIn,
       askSignIn: askAccount,
-      onReserve: (roomId, day, startMin, durationMin) => {
-        room.sendReserve(roomId, day, startMin, durationMin);
+      onReserve: (roomId, day, startMin, durationMin, access) => {
+        room.sendReserve(roomId, day, startMin, durationMin, access);
       },
       onCancel: (id) => {
         room.sendCancelReserve(id);
+      },
+      onSetAccess: (id, access) => {
+        room.sendConfAccess(id, access);
+      },
+      onJoin: (roomId, code) => {
+        room.sendConfJoin(roomId, code);
+      },
+      getOccupants: (roomId) => {
+        const conf = (plate.conferences ?? []).find((item) => item.id === roomId);
+        if (!conf) return [];
+        const rows: { id: string; name: string; self?: boolean }[] = [];
+        const you = playerCtl?.pose();
+        if (you && inConferencePose(conf, you)) {
+          rows.push({ id: identity.id, name: identity.name, self: true });
+        }
+        for (const pose of remotes.poses()) {
+          if (!inConferencePose(conf, pose)) continue;
+          rows.push({ id: pose.id, name: pose.name || pose.id.slice(0, 8) });
+        }
+        return rows;
+      },
+      onBoot: (roomId, peerId) => {
+        room.sendConfBoot(roomId, peerId);
       },
       onStatus: (text) => {
         status.textContent = text;
       },
     });
-    const openConference = (conf: { id: string; col: number; row: number; cols?: number; rows?: number }) => {
-      confReserve!.open(conf as any);
+    const walkInConference = (conf: OfficeInstance) => {
+      if (canEnterConference(reservations, conf.id, identity.id)) {
+        const at = conferenceCenter(conf, plate);
+        playerCtl?.goTo(at.x, at.y);
+        status.textContent = nextBookingLabel(reservations, conf.id) || "conference";
+        return;
+      }
+      const group = confGroup(conf.id);
+      const at = group
+        ? conferenceApproach(group, plate)
+        : conferenceCenter(conf, plate);
+      playerCtl?.goTo(at.x, at.y);
+      confReserve!.openJoin(conf);
+      status.textContent = "conference is locked";
+    };
+
+    const confAsk = document.querySelector<HTMLElement>("#conf-ask")!;
+    const confAskTitle = document.querySelector("#conf-ask-title")!;
+    const confAskHello = document.querySelector("#conf-ask-hello")!;
+    const confAskCopy = document.querySelector("#conf-ask-copy")!;
+    const confAskWalk = document.querySelector<HTMLButtonElement>("#conf-ask-walk")!;
+    let pendingConf: OfficeInstance | null = null;
+
+    const hideConfAsk = () => {
+      pendingConf = null;
+      confAsk.hidden = true;
+    };
+
+    const showConfAsk = (conf: OfficeInstance) => {
+      prompt.hide();
+      pendingConf = conf;
+      const notice = conferenceNotice(reservations, conf.id);
+      const allowed = canEnterConference(reservations, conf.id, identity.id);
+      confAskTitle.textContent = prettyRoom(conf.id);
+      confAskHello.textContent = notice.sub
+        ? `${notice.title} · ${notice.sub}`
+        : "Reserve this room?";
+      confAskCopy.textContent = allowed
+        ? notice.tone === "open"
+          ? "Anyone on the floor can walk in. Reserve to take the next slot."
+          : "Walk in, or reserve a slot. Open sessions let anyone in; code sessions need a door code."
+        : "This meeting is code-only. Enter the door code, or reserve another time.";
+      confAskWalk.textContent = allowed ? "Walk in" : "Enter code";
+      confAsk.hidden = false;
       status.textContent = nextBookingLabel(reservations, conf.id) || "conference";
     };
+
+    confAskWalk.addEventListener("click", () => {
+      const conf = pendingConf;
+      hideConfAsk();
+      if (conf) walkInConference(conf);
+    });
+    document.querySelector("#conf-ask-go")?.addEventListener("click", () => {
+      const conf = pendingConf;
+      hideConfAsk();
+      if (conf) confReserve?.open(conf);
+    });
+    document.querySelector("#conf-ask-no")?.addEventListener("click", hideConfAsk);
+    document.querySelector("#conf-ask-close")?.addEventListener("click", hideConfAsk);
+    confAsk.addEventListener("click", (event) => {
+      if (event.target === confAsk) hideConfAsk();
+    });
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !confAsk.hidden) hideConfAsk();
+    });
 
     const personProfile = (peerId: string) => {
       const claim = desks.mine(peerId);
@@ -1041,6 +1450,10 @@ loadPlate()
       personCard.hidden = true;
       personCardNote.hidden = true;
       personCardMeta.hidden = true;
+      personCardCompany.hidden = true;
+      personCardLink.hidden = true;
+      personCardPhoto.hidden = true;
+      personCardPhoto.removeAttribute("src");
       delete personCard.dataset.mode;
       delete personCard.dataset.id;
     };
@@ -1049,15 +1462,39 @@ loadPlate()
       personCardNote.textContent = text;
       status.textContent = text;
     };
+    const paintPersonCard = (id: string, name: string) => {
+      const face = faceOf(id);
+      const company = face.company;
+      const url = face.profileUrl;
+      personCardName.textContent = name;
+      paintPersonPhoto(id);
+      if (company) {
+        personCardCompany.hidden = false;
+        personCardCompany.textContent = company;
+      } else {
+        personCardCompany.hidden = true;
+        personCardCompany.textContent = "";
+      }
+      if (url) {
+        personCardLink.hidden = false;
+        personCardLink.href = url;
+        personCardLink.textContent = url.replace(/^https?:\/\//, "");
+      } else {
+        personCardLink.hidden = true;
+        personCardLink.removeAttribute("href");
+        personCardLink.textContent = "";
+      }
+      personCardMeta.textContent = personProfile(id);
+    };
+
     inspectPerson = (id: string, name: string) => {
       if (!id || id === identity.id) return;
       personCard.dataset.mode = "inspect";
       personCard.dataset.id = id;
       personCard.dataset.name = name;
       personCardTitle.textContent = "Person";
-      personCardName.textContent = name;
+      paintPersonCard(id, name);
       personCardMeta.hidden = true;
-      personCardMeta.textContent = personProfile(id);
       personCardNote.hidden = true;
       personCardActions.hidden = false;
       personCard.hidden = false;
@@ -1080,14 +1517,41 @@ loadPlate()
     document.querySelector("#person-card-profile")?.addEventListener("click", () => {
       const id = personCard.dataset.id;
       if (!id) return;
+      const url = faceOf(id).profileUrl;
       personCardMeta.hidden = false;
-      personCardMeta.textContent = personProfile(id);
       personCardNote.hidden = true;
+      if (url) window.open(url, "_blank", "noopener,noreferrer");
     });
     document.querySelector("#person-card-whisper")?.addEventListener("click", () => {
       const id = personCard.dataset.id;
       const name = personCard.dataset.name ?? "";
       if (id) beginWhisper(id, name);
+    });
+
+    const hideAdVisit = () => {
+      adVisit.hidden = true;
+      delete adVisit.dataset.url;
+    };
+    const showAdVisit = (deskId: string) => {
+      const claim = desks.claimOf(deskId);
+      if (!claim) return;
+      adVisitName.textContent = claim.name || "Someone";
+      const company = claim.company ?? "";
+      adVisitCompany.hidden = !company;
+      adVisitCompany.textContent = company;
+      const url = claim.profileUrl ?? "";
+      adVisit.dataset.url = url;
+      adVisitGo.disabled = !url;
+      adVisitHint.textContent = url ? "Visit their profile link?" : "No profile link yet.";
+      hidePersonCard?.();
+      prompt.hide();
+      adVisit.hidden = false;
+    };
+    document.querySelector("#ad-visit-close")?.addEventListener("click", hideAdVisit);
+    adVisitGo.addEventListener("click", () => {
+      const url = adVisit.dataset.url;
+      if (url) window.open(url, "_blank", "noopener,noreferrer");
+      hideAdVisit();
     });
 
     playerCtl = attachPlayer({
@@ -1100,12 +1564,15 @@ loadPlate()
       ground,
       overlay: document.querySelector("#enter-overlay"),
       isBlocked: () =>
+        parkedOutside ||
+        guestShiftHeld ||
         editor.enabled() ||
         editor.busy() ||
         !claimShift.hidden ||
         !joinGate.hidden ||
         (!dayEnd.hidden && dayEndMode === "ask") ||
-        Boolean(confReserve?.isOpen()),
+        Boolean(confReserve?.isOpen() || confReserve?.isJoinOpen()) ||
+        !confAsk.hidden,
       colliderRoots: [editRoot, structure],
       onMove: (x, y, facing) => room.sendMove(x, y, facing),
       onClickFx: (wx, wz) => clickVfx?.spawn(wx, wz),
@@ -1161,13 +1628,36 @@ loadPlate()
           inspectPerson?.(person.id, person.name);
           return true;
         }
-        const sitHit = desks.pickSeat(camera, pointer);
+        const adHit = pickOfficeAd(camera, pointer, [officesRoot]);
+        if (adHit) {
+          showAdVisit(adHit.deskId);
+          return true;
+        }
+        const sitHit = desks.pickSeat(camera, pointer, (seatId) => {
+          const who = seatTakenBy(seatId);
+          return Boolean(who && who !== selfId && who !== "you");
+        });
         if (sitHit) {
-          const lounge = !sitHit.desk;
-          if (!lounge && !isSignedIn()) {
-            askAccount("Sign in to sit in an office.");
+          const visitClaim = sitHit.desk ? desks.claimOf(sitHit.desk.id) : undefined;
+          const openVisit = Boolean(
+            visitClaim &&
+              visitClaim.peerId !== identity.id &&
+              visitClaim.privacy === "open" &&
+              !barredFrom(visitClaim.peerId),
+          );
+          if (openVisit) return false;
+          if (sitHit.occupied) {
+            status.textContent = "that seat is taken";
             return true;
           }
+          const seatCol = Math.floor(sitHit.seat.x / plate.grid.cellSize);
+          const seatRow = Math.floor(sitHit.seat.y / plate.grid.cellSize);
+          const seatConf = conferenceAtCell(plate, seatCol, seatRow);
+          if (seatConf && !canEnterConference(reservations, seatConf.id, identity.id)) {
+            showConfAsk(seatConf);
+            return true;
+          }
+          const lounge = !sitHit.desk;
           if (lounge) {
             const [wx, , wz] = toWorld(sitHit.seat.x, sitHit.seat.y, plate);
             prompt.showSit(null, sitHit.seat, wx, wz, sitHit.type);
@@ -1176,14 +1666,12 @@ loadPlate()
           const desk = sitHit.desk;
           if (!desk) return false;
           const claim = desks.claimOf(desk.id);
-          const guest = Boolean(
-            claim &&
-              claim.peerId !== identity.id &&
-              claim.privacy === "open" &&
-              !barredFrom(claim.peerId),
-          );
           const mine = Boolean(claim && claim.peerId === identity.id);
-          if (guest || mine) {
+          if (mine && !isSignedIn()) {
+            askAccount("Sign in to sit in an office.");
+            return true;
+          }
+          if (mine) {
             const [wx, , wz] = toWorld(sitHit.seat.x, sitHit.seat.y, plate);
             prompt.showSit(desk, sitHit.seat, wx, wz, sitHit.type);
             return true;
@@ -1192,9 +1680,14 @@ loadPlate()
         if (prompt.kind === "leave") leaveArmed = false;
         pendingKnock = null;
         prompt.hide();
+        const confNotice = pickConferenceNotice(camera, pointer, conferencesRoot);
+        if (confNotice) {
+          showConfAsk(confNotice);
+          return true;
+        }
         const confHit = pickConferenceGroup(camera, pointer, conferencesRoot);
         if (confHit) {
-          openConference(confHit);
+          showConfAsk(confHit);
           return true;
         }
         return false;
@@ -1203,17 +1696,13 @@ loadPlate()
         if (kind === "conference") {
           const conf = conferenceAtCell(plate, col, row);
           if (!conf) return false;
-          openConference(conf);
+          showConfAsk(conf);
           return true;
         }
         if (kind !== "office" && kind !== "cube") return false;
         const desk = desks.atCell(col, row);
         if (!desk) return false;
         if (desks.fixture(desk.id)) return false;
-        if (!isSignedIn()) {
-          askAccount("Sign in to take an office.");
-          return true;
-        }
         const claim = desks.claimOf(desk.id);
         if (claim && claim.peerId !== identity.id) {
           if (barredFrom(claim.peerId) || claim.privacy === "focus") {
@@ -1228,6 +1717,11 @@ loadPlate()
             const dx = (you?.x ?? 0) - at.x;
             const dy = (you?.y ?? 0) - at.y;
             if (you && !playerCtl?.moving() && dx * dx + dy * dy < 28 * 28) {
+              if (!isSignedIn()) {
+                askAccount("Sign in to knock.");
+                pendingKnock = null;
+                return true;
+              }
               const [wx, , wz] = toWorld(at.x, at.y, plate);
               prompt.showKnock(desk, wx, wz);
               pendingKnock = null;
@@ -1240,12 +1734,40 @@ loadPlate()
           pendingKnock = null;
           return false;
         }
+        if (!isSignedIn()) {
+          askAccount("Sign in to take an office.");
+          return true;
+        }
         if (claim && claim.peerId === identity.id) return claimDesk(desk);
         if (desks.mine(identity.id)) return false;
         showClaimShift(desk);
         return true;
       },
     });
+    playerCtl.setCellBlocked(conferenceBlocked);
+    syncConferencePresence = (you) => {
+      const col = you.col ?? Math.floor(you.x / plate.grid.cellSize);
+      const row = you.row ?? Math.floor(you.y / plate.grid.cellSize);
+      const here = desks.atCell(col, row);
+      const conf = conferenceAtCell(plate, col, row);
+      const chatId =
+        here?.id ??
+        (conf && canEnterConference(reservations, conf.id, identity.id) ? conf.id : null);
+      macCtl?.setChatRoom(chatId);
+      if (
+        conf &&
+        !canEnterConference(reservations, conf.id, identity.id) &&
+        playerCtl &&
+        !playerCtl.moving()
+      ) {
+        const group = confGroup(conf.id);
+        if (group) {
+          const at = conferenceApproach(group, plate);
+          playerCtl.goTo(at.x, at.y, true);
+        }
+      }
+      if (confReserve?.isOpen()) confReserve.refreshPeople();
+    };
     {
       const spawnPose = playerCtl.pose();
       const [sx, , sz] = toWorld(spawnPose.x, spawnPose.y, plate);
@@ -1285,8 +1807,11 @@ loadPlate()
           privacy: "open",
           since: Date.now(),
           timezone: tz,
+          company: identity.company,
+          profileUrl: identity.profileUrl,
         });
         room.sendClaim(desk.id, tz);
+        playChime("claim");
       }
       playerCtl?.goSit(desks.seat(desk));
       syncMacDesk();
@@ -1337,38 +1862,43 @@ loadPlate()
     goHome = () => {
       const plateNow = livePlate ?? plate;
       const spawn = sidewalkSpawn(plateNow);
-      playerCtl?.stand();
-      playerCtl?.goTo(spawn.x, spawn.y, true);
-      const pose = playerCtl?.pose();
-      if (pose) {
-        const [wx, , wz] = toWorld(pose.x, pose.y, plateNow);
-        centerCameraOn(wx, wz);
-      }
+      placeAt(spawn.x, spawn.y);
       status.textContent = "headed home";
     };
 
     clockOut = (home = false) => {
       const mine = desks.mine(identity.id);
+      const desk = mine ? desks.get(mine.deskId) : undefined;
+      const you = playerCtl?.pose();
+      const insideOffice = Boolean(desk && you && desks.contains(desk, you));
       if (mine) {
         room.sendRelease();
         desks.release(mine.deskId);
       }
-      playerCtl?.stand();
       prompt.hide();
       leaveArmed = false;
       syncMacDesk();
       paintFloorRoster();
       if (home) {
+        parkedOutside = true;
+        playChime("clockout");
         room.sendWhisperEnd();
         macCtl?.endAllWhispers();
         goHome?.();
-        shiftStartedAt = null;
+        dismissGuestOver();
+        clearShiftClock();
         dayEnd.hidden = true;
         document.querySelector("#mac")?.classList.add("collapsed");
         joinGate.hidden = false;
         joinAuth.hidden = true;
         joinActions.hidden = false;
         return;
+      }
+      if (insideOffice && desk) {
+        const at = desks.approach(desk);
+        placeAt(at.x, at.y);
+      } else {
+        playerCtl?.stand();
       }
       dayEnd.hidden = true;
     };
@@ -1377,43 +1907,6 @@ loadPlate()
       const mine = desks.mine(identity.id);
       mac.setHasDesk(Boolean(mine));
       mac.setPrivacy(mine?.privacy ?? "open");
-    };
-
-    const startBotKnock = () => {
-      const mine = desks.mine(identity.id);
-      const desk = mine ? desks.get(mine.deskId) : undefined;
-      if (!mine || !desk) {
-        status.textContent = "claim an office first";
-        return;
-      }
-      if (mine.privacy === "open") {
-        mine.privacy = "busy";
-        desks.apply(mine);
-        room.sendPrivacy("busy");
-        syncMacDesk();
-      }
-      remotes.remove(BOT_ID);
-      const spawn = elevatorSpawn(plate);
-      remotes.spawn({
-        id: BOT_ID,
-        name: "Bot",
-        color: "#8a9aaa",
-        x: spawn.x,
-        y: spawn.y,
-        facing: 0,
-        pose: "stand",
-        col: spawn.col,
-        row: spawn.row,
-      });
-      const at = desks.approach(desk);
-      remotes.walkTo(BOT_ID, at.x, at.y);
-      botWaiting = true;
-    };
-
-    const sendBotHome = () => {
-      const spawn = elevatorSpawn(plate);
-      remotes.walkTo(BOT_ID, spawn.x, spawn.y);
-      window.setTimeout(() => remotes.remove(BOT_ID), 8000);
     };
 
     const evictDesk = (deskId: string, hostId: string) => {
@@ -1426,13 +1919,10 @@ loadPlate()
         playerCtl?.goTo(at.x, at.y, true);
         status.textContent = "asked to leave";
       }
-      const kickBot = hostId === identity.id;
       for (const pose of remotes.poses()) {
         if (pose.id === hostId) continue;
-        const inside = desks.contains(desk, pose);
-        if (!inside && !(kickBot && pose.id === BOT_ID)) continue;
+        if (!desks.contains(desk, pose)) continue;
         remotes.walkTo(pose.id, at.x, at.y);
-        if (pose.id === BOT_ID) window.setTimeout(sendBotHome, 1500);
       }
     };
 
@@ -1447,25 +1937,6 @@ loadPlate()
       status.textContent = "door closed";
     };
 
-    const finishBotKnock = (accept: boolean) => {
-      const mine = desks.mine(identity.id);
-      const desk = mine ? desks.get(mine.deskId) : undefined;
-      if (accept && mine && desk) {
-        mine.privacy = "open";
-        desks.apply(mine);
-        room.sendPrivacy("open");
-        syncMacDesk();
-        const couch = desks.couchSeat(desk);
-        if (couch) remotes.walkToSit(BOT_ID, couch);
-        else {
-          const inside = fromWorld(desk.group.position.x, desk.group.position.z, plate);
-          remotes.walkTo(BOT_ID, inside.x, inside.y);
-        }
-      } else {
-        sendBotHome();
-      }
-    };
-
     const paintSelf = () => {
       selfId = identity.id;
       selfName = identity.name;
@@ -1473,23 +1944,34 @@ loadPlate()
       youAvatar.id = identity.id;
       youAvatar.name = identity.name;
       youAvatar.color = identity.color;
+      youAvatar.look = identity.look;
       setAvatarName(you, identity.name);
+      showLook();
       macCtl?.setName(identity.name);
+      macCtl?.setCompany(identity.company ?? "");
+      macCtl?.setProfileUrl(identity.profileUrl ?? "");
       macCtl?.setAccount(identity.email);
     };
 
-    const becomeSignedIn = async (user: { id: string; email: string; name: string; color: string }, token: string) => {
+    const becomeSignedIn = async (
+      user: {
+        id: string;
+        email: string;
+        name: string;
+        color: string;
+        company?: string;
+        profileUrl?: string;
+        look?: AvatarLook;
+      },
+      token: string,
+    ) => {
       const oldId = identity.id;
       const wallet = await ensureSessionWallet(token, true);
       await bindSessionWallet(wallet.address);
       guest = wallet;
       session = { user, token, address: wallet.address, blocked: [...blocked], officeAd: officeAdState };
-      identity.id = user.id;
-      identity.name = sanitizeName(user.name) || identity.name;
-      identity.color = user.color || identity.color;
-      identity.email = user.email;
+      adoptUser(user);
       identity.address = wallet.address;
-      applyAccount(user);
       if (oldId !== identity.id) {
         const mine = desks.mine(oldId);
         if (mine) {
@@ -1509,7 +1991,162 @@ loadPlate()
       }
       room.identify();
       await worldChat?.reconnect(wallet.identity, wallet.address);
+      releaseGuestHold();
     };
+
+    const guestEmail = document.querySelector<HTMLInputElement>("#guest-over-email")!;
+    const guestEmailSend = document.querySelector<HTMLButtonElement>("#guest-over-email-send")!;
+    const guestCodeWrap = document.querySelector<HTMLElement>("#guest-over-code-wrap")!;
+    const guestCode = document.querySelector<HTMLInputElement>("#guest-over-code")!;
+    const guestVerify = document.querySelector<HTMLButtonElement>("#guest-over-verify")!;
+    const guestHint = document.querySelector<HTMLElement>("#guest-over-hint")!;
+    const guestGoogleWrap = document.querySelector<HTMLElement>("#guest-over-google-wrap")!;
+    const guestGoogle = document.querySelector<HTMLElement>("#guest-over-google")!;
+    const setGuestHint = (text: string) => {
+      guestHint.textContent = text;
+    };
+    const showGuestAuth = (on: boolean) => {
+      guestOverActions.hidden = on;
+      guestOverAuth.hidden = !on;
+    };
+    let guestGoogleReady = false;
+    const loadGuestGoogle = () => {
+      const clientId = authConfig.googleClientId;
+      if (!clientId || guestGoogleReady) return;
+      const render = () => {
+        const gsi = window.google?.accounts?.id;
+        if (!gsi) return;
+        gsi.initialize({
+          client_id: clientId,
+          callback: (response) => {
+            setGuestHint("Signing in…");
+            void loginWithGoogle({
+              credential: response.credential,
+              guestId: identity.id,
+              name: identity.name,
+              color: identity.color,
+              look: wornLook(),
+            }).then(async (result) => {
+              if (!result.ok) {
+                setGuestHint(result.error || "Google sign-in failed");
+                return;
+              }
+              await becomeSignedIn(result.user, result.token);
+            });
+          },
+          auto_select: false,
+          cancel_on_tap_outside: true,
+        });
+        guestGoogle.replaceChildren();
+        gsi.renderButton(guestGoogle, {
+          type: "standard",
+          theme: "outline",
+          size: "medium",
+          text: "continue_with",
+          width: 320,
+        });
+        guestGoogleWrap.hidden = false;
+        guestGoogleReady = true;
+      };
+      if (window.google?.accounts?.id) {
+        render();
+        return;
+      }
+      const existing = document.querySelector<HTMLScriptElement>("script[data-gsi]");
+      if (existing) {
+        existing.addEventListener("load", render, { once: true });
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      script.defer = true;
+      script.dataset.gsi = "1";
+      script.addEventListener("load", render, { once: true });
+      document.head.appendChild(script);
+    };
+
+    holdGuestShift = () => {
+      if (guestShiftHeld || isSignedIn() || parkedOutside) return;
+      guestShiftHeld = true;
+      markGuestSpent();
+      pauseShiftClock();
+      room.sendShiftHold();
+      prompt.hide();
+      claimShift.hidden = true;
+      if (dayEndMode === "ask") dayEnd.hidden = true;
+      confAsk.hidden = true;
+      confReserve?.hide();
+      confReserve?.hideJoin();
+      hidePersonCard?.();
+      adVisit.hidden = true;
+      leaveArmed = false;
+      const spawn = elevatorSpawn(livePlate ?? plate);
+      placeAt(spawn.x, spawn.y);
+      showGuestAuth(false);
+      guestOver.hidden = false;
+    };
+    if (guestHoldPending) {
+      guestHoldPending = false;
+      holdGuestShift();
+    }
+    onGuestExpired = () => {
+      if (guestShiftHeld || parkedOutside || isSignedIn() || !joinGate.hidden) return;
+      if (shiftStartedAt == null) return;
+      if (Date.now() - shiftStartedAt < GUEST_SHIFT_MS) return;
+      holdGuestShift?.();
+    };
+    document.querySelector("#guest-over-signin")?.addEventListener("click", () => {
+      showGuestAuth(true);
+      loadGuestGoogle();
+      guestEmail.focus();
+    });
+    document.querySelector("#guest-over-back")?.addEventListener("click", () => showGuestAuth(false));
+    document.querySelector("#guest-over-leave")?.addEventListener("click", () => clockOut?.(true));
+    guestEmailSend.addEventListener("click", () => {
+      const email = guestEmail.value.trim();
+      if (!email) {
+        setGuestHint("Enter your email.");
+        return;
+      }
+      guestEmailSend.disabled = true;
+      setGuestHint("Sending code…");
+      void startEmailCode(email).then((result) => {
+        guestEmailSend.disabled = false;
+        if (!result.ok) {
+          setGuestHint(result.error || "Couldn't send a code.");
+          return;
+        }
+        guestCodeWrap.hidden = false;
+        setGuestHint(result.devCode ? `Dev code: ${result.devCode}` : "Check your email for a code.");
+        guestCode.focus();
+      });
+    });
+    guestVerify.addEventListener("click", () => {
+      const email = guestEmail.value.trim();
+      const code = guestCode.value.trim();
+      if (!email || !code) {
+        setGuestHint("Enter the code from your email.");
+        return;
+      }
+      guestVerify.disabled = true;
+      setGuestHint("Signing in…");
+      void verifyEmailCode({
+        email,
+        code,
+        guestId: identity.id,
+        name: identity.name,
+        color: identity.color,
+        look: wornLook(),
+      }).then(async (result) => {
+        guestVerify.disabled = false;
+        if (!result.ok) {
+          setGuestHint(result.error || "Couldn't sign in.");
+          return;
+        }
+        await becomeSignedIn(result.user, result.token);
+      });
+    });
 
     const becomeGuest = async () => {
       room.sendWhisperEnd();
@@ -1542,6 +2179,25 @@ loadPlate()
     const mac = attachMac({
       root: document.querySelector("#mac")!,
       getName: () => identity.name,
+      getCompany: () => identity.company ?? "",
+      getProfileUrl: () => identity.profileUrl ?? "",
+      getLook: () => wornLook(),
+      onLook: (look) => {
+        const next = clampLook(look);
+        if (!next || sameLook(next, wornLook())) return;
+        identity.look = next;
+        identity.color = next.shirt;
+        saveIdentity(identity);
+        showLook();
+        room.sendProfile(identity.name, identity.company ?? "", identity.profileUrl ?? "", next);
+        if (!identity.email) return;
+        void saveAccountProfile({
+          name: identity.name,
+          company: identity.company,
+          profileUrl: identity.profileUrl,
+          look: next,
+        });
+      },
       onName: async (raw) => {
         const name = sanitizeName(raw) || identity.name;
         identity.name = name;
@@ -1550,13 +2206,53 @@ loadPlate()
         saveIdentity(identity);
         setAvatarName(you, name);
         desks.rename(identity.id, name);
-        room.sendProfile(name);
+        room.sendProfile(name, identity.company, identity.profileUrl);
         mac.setName(name);
         mac.renameSpeaker(identity.id, name);
         worldChat?.setName(name);
         if (!identity.email) return true;
         const saved = await saveAccountName(name);
         return saved.ok;
+      },
+      onSaveProfile: async ({ name: raw, company: rawCompany, profileUrl: rawUrl }) => {
+        const name = sanitizeName(raw) || identity.name;
+        const company = clampCompany(rawCompany);
+        const profileUrl = clampProfileUrl(rawUrl);
+        if (rawUrl.trim() && !profileUrl) return false;
+        identity.name = name;
+        identity.company = company || undefined;
+        identity.profileUrl = profileUrl || undefined;
+        youAvatar.name = name;
+        selfName = name;
+        saveIdentity(identity);
+        setAvatarName(you, name);
+        desks.rename(identity.id, name);
+        const mine = desks.mine(identity.id);
+        if (mine) {
+          mine.company = identity.company;
+          mine.profileUrl = identity.profileUrl;
+          desks.apply(mine);
+        }
+        room.sendProfile(name, identity.company ?? "", identity.profileUrl ?? "");
+        mac.setName(name);
+        mac.setCompany(company);
+        mac.setProfileUrl(profileUrl);
+        mac.renameSpeaker(identity.id, name);
+        worldChat?.setName(name);
+        paintFloorRoster();
+        if (!identity.email) return true;
+        const saved = await saveAccountProfile({
+          name,
+          company,
+          profileUrl,
+        });
+        return saved.ok;
+      },
+      onGoTo: (deskId) => {
+        const desk = desks.get(deskId);
+        if (!desk) return;
+        const at = desks.approach(desk);
+        playerCtl?.goTo(at.x, at.y);
       },
       getPrivacy: () => desks.mine(identity.id)?.privacy ?? "open",
       onPrivacy: (privacy: Privacy) => {
@@ -1606,10 +2302,14 @@ loadPlate()
           const col = you.col ?? Math.floor(you.x / plate.grid.cellSize);
           const row = you.row ?? Math.floor(you.y / plate.grid.cellSize);
           const here = desks.atCell(col, row);
-          if (!here) return;
-          const dest = officeChatTargets(here.id);
-          if (worldChat?.sendChat(text, "office", dest, here.id)) {
-            mac.addChat(identity.name, text, true, "office", here.id, identity.id);
+          const conf = conferenceAtCell(plate, col, row);
+          const roomId =
+            here?.id ??
+            (conf && canEnterConference(reservations, conf.id, identity.id) ? conf.id : null);
+          if (!roomId) return;
+          const dest = officeChatTargets(roomId);
+          if (worldChat?.sendChat(text, "office", dest, roomId)) {
+            mac.addChat(identity.name, text, true, "office", roomId, identity.id);
             return;
           }
           room.sendChat(text, "office");
@@ -1622,15 +2322,10 @@ loadPlate()
         room.sendChat(text, "floor");
       },
       onKnockReply: (fromId, accept) => {
-        if (fromId === BOT_ID) {
-          finishBotKnock(accept);
-          return;
-        }
         room.sendKnockReply(fromId, accept);
         if (accept) syncMacDesk();
       },
       onBlock: (id, on) => setBlock(id, on),
-      onDebugKnock: () => startBotKnock(),
       onBoot: () => bootOffice(),
       officeAd: {
         get: () => ({ enabled: officeAdState.enabled, previewUrl: officeAdState.url }),
@@ -1683,6 +2378,7 @@ loadPlate()
             guestId: identity.id,
             name: identity.name,
             color: identity.color,
+            look: wornLook(),
           });
           if (!result.ok) return result;
           await becomeSignedIn(result.user, result.token);
@@ -1694,6 +2390,7 @@ loadPlate()
             guestId: identity.id,
             name: identity.name,
             color: identity.color,
+            look: wornLook(),
           });
           if (!result.ok) return result;
           await becomeSignedIn(result.user, result.token);
@@ -1719,6 +2416,7 @@ loadPlate()
           id === identity.address || id === identity.id
             ? identity.id
             : remotes.poses().find((pose) => pose.address === id)?.id ?? id;
+        if (fromPeer !== identity.id) playChatSound(channel === "office" ? "office" : "floor");
         mac.addChat(name, text, fromPeer === identity.id, channel, deskId, fromPeer);
       },
       onStatus: (text) => {
@@ -1726,21 +2424,7 @@ loadPlate()
       },
     });
     worldChatCtl = worldChat;
-    onBotArrived = () => {
-      if (desks.mine(identity.id)?.privacy === "focus") {
-        sendBotHome();
-        return;
-      }
-      mac.showKnock("Bot", BOT_ID);
-    };
     syncMacDesk();
-
-    editToggle.addEventListener("click", () => {
-      const on = !editor.enabled();
-      editor.setEnabled(on);
-      document.body.classList.toggle("editing", on);
-      editToggle.textContent = on ? "Done" : "Edit";
-    });
   })
   .catch((err) => {
     console.error(err);
@@ -1763,6 +2447,7 @@ function simulate(dt: number) {
   camCtl?.update(Math.min(dt, 0.05));
   playerCtl?.update(dt);
   remotesCtl?.update(dt);
+  updateAvatars(dt);
   clickVfx?.update(dt);
   if (!desksCtl) return;
   const poses = remotesCtl?.poses() ?? [];
@@ -1787,7 +2472,8 @@ function simulate(dt: number) {
     const col = you.col ?? Math.floor(you.x / livePlate.grid.cellSize);
     const row = you.row ?? Math.floor(you.y / livePlate.grid.cellSize);
     const here = desksCtl.atCell(col, row);
-    macCtl?.setChatRoom(here ? here.id : null);
+    if (here) macCtl?.setChatRoom(here.id);
+    else syncConferencePresence?.(you);
     const quiet = poseInQuietZone(livePlate, you);
     if (quiet !== lastQuiet) {
       lastQuiet = quiet;
@@ -1795,10 +2481,6 @@ function simulate(dt: number) {
       worldChatCtl?.setQuiet(quiet);
       setAmbientSilent(quiet);
     }
-  }
-  if (botWaiting && remotesCtl && !remotesCtl.moving(BOT_ID)) {
-    botWaiting = false;
-    onBotArrived?.();
   }
   if (livePlate && playerCtl && promptCtl) {
     const pose = playerCtl.pose();
@@ -1824,7 +2506,10 @@ function simulate(dt: number) {
         }
       }
     }
-    if (atElevator && !playerCtl.moving() && leaveArmed) {
+    if (guestShiftHeld) {
+      leaveArmed = false;
+      if (promptCtl.kind === "leave") promptCtl.hide();
+    } else if (atElevator && !playerCtl.moving() && leaveArmed) {
       if (promptCtl.kind === "leave") promptCtl.hide();
       if (dayEnd.hidden) askClockOut?.();
     } else if (!atElevator) {
@@ -1840,6 +2525,16 @@ function simulate(dt: number) {
     const here = desksCtl.atCell(remote.col ?? 0, remote.row ?? 0);
     setNameTagVisible(remote.group, !(mine && here?.id === mine.deskId));
   }
+}
+
+function seatTakenBy(seatId?: string) {
+  if (!seatId) return null;
+  const you = playerCtl?.pose();
+  if (you?.pose === "sit" && you.seatId === seatId) return selfId || "you";
+  for (const peer of remotesCtl?.poses() ?? []) {
+    if (peer.pose === "sit" && peer.seatId === seatId) return peer.id;
+  }
+  return null;
 }
 
 function workTime(since: number) {
@@ -1870,6 +2565,9 @@ function fillTimesheet(since: number, desk: string) {
   });
   dayEndTime.textContent = formatShift(since);
   dayEndDesk.textContent = desk || "—";
+  const minutes = Math.floor(shiftElapsedMs() / 60000);
+  dayEndShiftXp.textContent = `${(minutes * XP_PER_MINUTE).toLocaleString("en-US")} XP`;
+  dayEndTotalXp.textContent = `${bankedXp.toLocaleString("en-US")} XP`;
 }
 
 function paintElevatorFloors() {
@@ -2010,10 +2708,11 @@ function updateOfficePeek(desk: Desk | null, kind?: string) {
     return;
   }
   peekName.textContent = "Vacant";
-  peekMeta.textContent = desksCtl?.mine(selfId) ? "You already have a desk" : "Click to claim · earns XP";
+  peekMeta.textContent = desksCtl?.mine(selfId) ? "You already have a desk" : "Click to claim";
 }
 
 function tick(render: boolean) {
+  onGuestExpired?.();
   const now = performance.now();
   let dt = (now - lastTick) / 1000;
   lastTick = now;
@@ -2021,13 +2720,15 @@ function tick(render: boolean) {
   simulate(dt);
   if (!render) return;
   resize();
-  controls.update();
   if (playerCtl?.moving() && livePlate) {
     const pose = playerCtl.pose();
     const [wx, , wz] = toWorld(pose.x, pose.y, livePlate);
     centerCameraOn(wx, wz);
   }
-  zoomReadout.textContent = `zoom ${camera.zoom.toFixed(2)}`;
+  if (!camCtl?.rotating?.()) controls.update();
+  camCtl?.clamp?.();
+  paintYouHud();
+  desksCtl?.cullLamps(controls.target);
 
   const tiles = scene.getObjectByName("tiles");
   if (tiles) {
@@ -2038,26 +2739,40 @@ function tick(render: boolean) {
     const row = hit?.object.userData.row as number | undefined;
     const desk = kind && col !== undefined && row !== undefined ? desksCtl?.atCell(col, row) : null;
     const personHover = remotesCtl?.pick(camera, pointer);
+    const adHover =
+      !personHover && desksCtl ? pickOfficeAd(camera, pointer, [scene.getObjectByName("offices") ?? scene]) : null;
     if (personHover) {
       canvas.style.cursor = "pointer";
       status.textContent = personHover.name;
+    } else if (adHover) {
+      canvas.style.cursor = "pointer";
+      const who = desksCtl?.claimOf(adHover.deskId);
+      status.textContent = who ? `${who.name}${who.company ? ` · ${who.company}` : ""} · visit` : "window ad";
     } else {
       canvas.style.cursor = "";
     }
-    const sitHover = desksCtl?.pickSeat(camera, pointer);
+    const sitHover = desksCtl?.pickSeat(camera, pointer, (seatId) => {
+      const who = seatTakenBy(seatId);
+      return Boolean(who && who !== selfId && who !== "you");
+    });
     const sitClaim = sitHover?.desk ? desksCtl?.claimOf(sitHover.desk.id) : undefined;
+    const openVisit = Boolean(
+      sitClaim &&
+        sitClaim.peerId !== selfId &&
+        sitClaim.privacy === "open" &&
+        !blocked.has(sitClaim.peerId) &&
+        !blockedBy.has(sitClaim.peerId),
+    );
     const canSit = Boolean(
       sitHover &&
-        (!sitHover.desk ||
-          (sitClaim &&
-            (sitClaim.peerId === selfId ||
-              (sitClaim.peerId !== selfId &&
-              sitClaim.privacy === "open" &&
-              !blocked.has(sitClaim.peerId) &&
-              !blockedBy.has(sitClaim.peerId))))),
+        !sitHover.occupied &&
+        !openVisit &&
+        (!sitHover.desk || (sitClaim && sitClaim.peerId === selfId)),
     );
     if (personHover) {
       /* whisper hover already set */
+    } else if (sitHover?.occupied && !openVisit) {
+      status.textContent = "seat taken";
     } else if (canSit && sitHover) {
       status.textContent =
         sitHover.type === "beanbag"
@@ -2076,7 +2791,6 @@ function tick(render: boolean) {
     updateOfficePeek(desk ?? null, kind);
   }
 
-  projectConfBadges?.();
   renderer.render(scene, camera);
 }
 

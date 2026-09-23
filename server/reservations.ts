@@ -1,18 +1,24 @@
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ConferenceReservation } from "../src/protocol";
+import type { ConfAccess, ConferenceReservation } from "../src/protocol";
 
 /** Calendar day + slot math use Pacific Time. */
 export const RESERVE_TZ = "America/Los_Angeles";
 export const SLOT_MIN = 30;
 export const MAX_DAY_MIN = 60;
-export const BOOK_START_MIN = 8 * 60; // 08:00 PT
-export const BOOK_END_MIN = 20 * 60; // 20:00 PT exclusive end
+export const BOOK_START_MIN = 0;
+export const BOOK_END_MIN = 24 * 60; // midnight exclusive end, PT
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const storePath = resolve(rootDir, "data/conference-reservations.json");
+const defaultStorePath = resolve(rootDir, "data/conference-reservations.json");
+let storePath = defaultStorePath;
+
+export function setReservationsStoreForTests(path: string | null) {
+  storePath = path ?? defaultStorePath;
+}
 
 type Store = { reservations: ConferenceReservation[] };
 
@@ -26,16 +32,18 @@ function loadStore(): Store {
     const parsed = JSON.parse(readFileSync(storePath, "utf8")) as Store;
     if (!parsed || !Array.isArray(parsed.reservations)) return emptyStore();
     return {
-      reservations: parsed.reservations.filter(
-        (row) =>
-          row &&
-          typeof row.id === "string" &&
-          typeof row.roomId === "string" &&
-          typeof row.peerId === "string" &&
-          typeof row.day === "string" &&
-          Number.isFinite(row.startMin) &&
-          (row.durationMin === 30 || row.durationMin === 60),
-      ),
+      reservations: parsed.reservations
+        .filter(
+          (row) =>
+            row &&
+            typeof row.id === "string" &&
+            typeof row.roomId === "string" &&
+            typeof row.peerId === "string" &&
+            typeof row.day === "string" &&
+            Number.isFinite(row.startMin) &&
+            (row.durationMin === 30 || row.durationMin === 60),
+        )
+        .map(normalizeReservation),
     };
   } catch {
     return emptyStore();
@@ -47,6 +55,33 @@ function saveStore(store: Store) {
   writeFileSync(storePath, `${JSON.stringify(store, null, 2)}\n`);
 }
 
+function clampAccess(value: unknown): ConfAccess {
+  return value === "code" ? "code" : "open";
+}
+
+function normalizeReservation(row: ConferenceReservation): ConferenceReservation {
+  const access = clampAccess(row.access);
+  const next: ConferenceReservation = {
+    id: row.id,
+    roomId: row.roomId,
+    peerId: row.peerId,
+    name: row.name,
+    day: row.day,
+    startMin: row.startMin,
+    durationMin: row.durationMin,
+    createdAt: row.createdAt,
+    access,
+  };
+  if (access === "code" && typeof row.code === "string" && row.code) next.code = row.code;
+  return next;
+}
+
+export function newConferenceCode(length = 4) {
+  let out = "";
+  for (let i = 0; i < length; i++) out += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
+  return out;
+}
+
 /** YYYY-MM-DD for an instant in America/Los_Angeles. */
 export function dayKeyInTz(ms = Date.now(), timeZone = RESERVE_TZ): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -55,6 +90,66 @@ export function dayKeyInTz(ms = Date.now(), timeZone = RESERVE_TZ): string {
     month: "2-digit",
     day: "2-digit",
   }).format(new Date(ms));
+}
+
+/** Minutes from midnight in a zone. Bookable hours are always PT. */
+export function minutesInTz(ms = Date.now(), timeZone = RESERVE_TZ): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "numeric",
+    minute: "numeric",
+    hourCycle: "h23",
+  }).formatToParts(new Date(ms));
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
+  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
+  return ((hour === 24 ? 0 : hour) % 24) * 60 + minute;
+}
+
+export function reservationEnded(row: ConferenceReservation, now = Date.now()) {
+  const today = dayKeyInTz(now);
+  if (row.day < today) return true;
+  if (row.day > today) return false;
+  return row.startMin + row.durationMin <= minutesInTz(now);
+}
+
+export function liveReservation(
+  roomId: string,
+  now = Date.now(),
+  list = listReservations(),
+): ConferenceReservation | null {
+  const day = dayKeyInTz(now);
+  const min = minutesInTz(now);
+  return (
+    list.find(
+      (row) =>
+        row.roomId === roomId &&
+        row.day === day &&
+        row.startMin <= min &&
+        min < row.startMin + row.durationMin,
+    ) ?? null
+  );
+}
+
+export function viewReservation(
+  row: ConferenceReservation,
+  viewerId: string,
+  admitted?: Set<string>,
+): ConferenceReservation {
+  const access = clampAccess(row.access);
+  const out: ConferenceReservation = {
+    id: row.id,
+    roomId: row.roomId,
+    peerId: row.peerId,
+    name: row.name,
+    day: row.day,
+    startMin: row.startMin,
+    durationMin: row.durationMin,
+    createdAt: row.createdAt,
+    access,
+    admitted: row.peerId === viewerId || Boolean(admitted?.has(row.id)),
+  };
+  if (row.peerId === viewerId && row.code) out.code = row.code;
+  return out;
 }
 
 export function formatClock(startMin: number): string {
@@ -99,13 +194,14 @@ export type ReserveInput = {
   day: string;
   startMin: number;
   durationMin: number;
+  access?: ConfAccess;
 };
 
 export type ReserveResult =
   | { ok: true; reservation: ConferenceReservation }
   | { ok: false; error: string };
 
-export function tryReserve(input: ReserveInput): ReserveResult {
+export function tryReserve(input: ReserveInput, now = Date.now()): ReserveResult {
   const roomId = String(input.roomId ?? "").trim().slice(0, 64);
   const peerId = String(input.peerId ?? "").trim().slice(0, 64);
   const name = String(input.name ?? "")
@@ -115,6 +211,7 @@ export function tryReserve(input: ReserveInput): ReserveResult {
   const day = String(input.day ?? "").trim();
   const startMin = Number(input.startMin);
   const durationMin = Number(input.durationMin);
+  const access = clampAccess(input.access);
 
   if (!roomId || !peerId) return { ok: false, error: "bad reservation" };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return { ok: false, error: "bad day" };
@@ -125,14 +222,17 @@ export function tryReserve(input: ReserveInput): ReserveResult {
     return { ok: false, error: "duration must be 30 or 60 minutes" };
   }
   if (startMin < BOOK_START_MIN || startMin + durationMin > BOOK_END_MIN) {
-    return { ok: false, error: "outside bookable hours (8:00 AM–8:00 PM PT)" };
+    return { ok: false, error: "outside bookable hours" };
   }
 
-  const today = dayKeyInTz();
+  const today = dayKeyInTz(now);
   if (day < today) return { ok: false, error: "cannot book in the past" };
+  if (day === today && startMin < minutesInTz(now)) {
+    return { ok: false, error: "that time already started" };
+  }
 
   const store = loadStore();
-  pruneOld(store);
+  pruneOld(store, today);
 
   for (const row of store.reservations) {
     if (row.roomId !== roomId || row.day !== day) continue;
@@ -159,11 +259,50 @@ export function tryReserve(input: ReserveInput): ReserveResult {
     day,
     startMin,
     durationMin: durationMin as 30 | 60,
-    createdAt: Date.now(),
+    createdAt: now,
+    access,
   };
+  if (access === "code") reservation.code = newConferenceCode();
   store.reservations.push(reservation);
   saveStore(store);
   return { ok: true, reservation };
+}
+
+export function trySetAccess(id: string, peerId: string, access: ConfAccess): ReserveResult {
+  const store = loadStore();
+  pruneOld(store);
+  const row = store.reservations.find((item) => item.id === id);
+  if (!row) return { ok: false, error: "not found" };
+  if (row.peerId !== peerId) return { ok: false, error: "not yours" };
+  const next = clampAccess(access);
+  row.access = next;
+  if (next === "code") row.code = newConferenceCode();
+  else delete row.code;
+  saveStore(store);
+  return { ok: true, reservation: row };
+}
+
+export type JoinResult =
+  | { ok: true; reservation: ConferenceReservation }
+  | { ok: false; error: string };
+
+export function joinReservation(roomId: string, code: string, now = Date.now()): JoinResult {
+  const roomKey = String(roomId ?? "").trim();
+  const needle = String(code ?? "")
+    .replace(/\s+/g, "")
+    .toUpperCase();
+  if (!roomKey || needle.length < 4) return { ok: false, error: "enter the door code" };
+  const store = loadStore();
+  pruneOld(store);
+  const row = store.reservations.find(
+    (item) =>
+      item.roomId === roomKey &&
+      item.access === "code" &&
+      item.code === needle &&
+      !reservationEnded(item, now),
+  );
+  if (!row) return { ok: false, error: "wrong code" };
+  return { ok: true, reservation: row };
 }
 
 export type CancelResult = { ok: true; id: string } | { ok: false; error: string };

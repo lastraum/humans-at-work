@@ -5,7 +5,12 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:prod": "bash scripts/deploy-prod.sh",
     "generate:floor": "node scripts/generate-floor-plate.mjs",
+    "test:floors": "npx tsx scripts/test-floors.mjs",
+    "test:xp": "npx tsx scripts/test-xp.mjs",
+    "test:reservations": "npx tsx scripts/test-reservations.mjs",
+    "fill:floor": "node scripts/test-fill-floor.mjs",
     "vendor:assets": "./scripts/vendor-claw3d-assets.sh"
   },
   "dependencies": {

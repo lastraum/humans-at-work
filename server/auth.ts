@@ -4,8 +4,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnv, type Plugin } from "vite";
-import { MAX_ID, MAX_NAME } from "../src/protocol";
-import { recordSignup } from "./metrics";
+import { clampLook, type AvatarLook } from "../src/avatarLook";
+import { MAX_ID, MAX_NAME, clampCompany, clampProfileUrl } from "../src/protocol";
+import { bankMinutes } from "../src/xp";
 
 const AUTH_PREFIX = "/__auth";
 const OFFICE_ADS_PREFIX = "/__office-ads";
@@ -27,6 +28,12 @@ type User = {
   officeAdEnabled?: boolean;
   officeAdRev?: number;
   officeAdMime?: string;
+  company?: string;
+  profileUrl?: string;
+  look?: AvatarLook;
+  /** Banked minutes on the floor. Remainder holds the partial minute. */
+  xp?: number;
+  xpRemainderMs?: number;
   createdAt: number;
   lastLoginAt: number;
 };
@@ -187,7 +194,16 @@ function safeEqual(a: string, b: string) {
 }
 
 function publicUser(user: User) {
-  return { id: user.id, email: user.email, name: user.name, color: user.color };
+  const look = clampLook(user.look);
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    color: look?.shirt || user.color,
+    company: user.company || undefined,
+    profileUrl: user.profileUrl || undefined,
+    look,
+  };
 }
 
 function safeUserId(value: unknown) {
@@ -318,6 +334,7 @@ function upsertUser(
     guestId?: string;
     name?: string;
     color?: string;
+    look?: AvatarLook;
   },
 ): { user: User; isNew: boolean } {
   const now = Date.now();
@@ -327,6 +344,10 @@ function upsertUser(
   if (user) {
     user.email = opts.email;
     if (opts.googleSub) user.googleSub = opts.googleSub;
+    if (!user.look && opts.look) {
+      user.look = opts.look;
+      user.color = opts.look.shirt;
+    }
     user.lastLoginAt = now;
     return { user, isNew: false };
   }
@@ -336,7 +357,8 @@ function upsertUser(
     id: takeGuest && guestId ? guestId : randomUUID(),
     email: opts.email,
     name: clampName(opts.name) || `Guest-${(guestId ?? "user").replace(/-/g, "").slice(0, 4)}`,
-    color: clampColor(opts.color) || "#f4a261",
+    color: opts.look?.shirt || clampColor(opts.color) || "#f4a261",
+    look: opts.look,
     googleSub: opts.googleSub,
     createdAt: now,
     lastLoginAt: now,
@@ -358,6 +380,45 @@ function sessionOf(store: Store, token: string) {
 export function userIdForToken(token: string) {
   if (!token) return null;
   return sessionOf(loadStore(), token)?.user.id ?? null;
+}
+
+export function hasUser(userId: string) {
+  if (!userId) return false;
+  return loadStore().users.some((row) => row.id === userId);
+}
+
+export function readUserXp(userId: string) {
+  const user = loadStore().users.find((row) => row.id === userId);
+  return Math.max(0, Math.floor(Number(user?.xp) || 0));
+}
+
+export function creditUserXp(userId: string, elapsedMs: number): Promise<{ xp: number }> {
+  return withStore((store) => {
+    const user = store.users.find((row) => row.id === userId);
+    if (!user) return { xp: 0 };
+    const banked = bankMinutes(Math.max(0, Number(user.xpRemainderMs) || 0), elapsedMs);
+    user.xp = Math.max(0, Math.floor(Number(user.xp) || 0)) + banked.xp;
+    user.xpRemainderMs = banked.remainderMs;
+    return { xp: user.xp };
+  });
+}
+
+export function absorbUserXp(userId: string, xp: number, remainderMs: number): Promise<{ xp: number }> {
+  return withStore((store) => {
+    const user = store.users.find((row) => row.id === userId);
+    if (!user) return { xp: 0 };
+    const banked = bankMinutes(Math.max(0, Number(user.xpRemainderMs) || 0) + Math.max(0, remainderMs), 0);
+    user.xp = Math.max(0, Math.floor(Number(user.xp) || 0)) + Math.max(0, Math.floor(xp)) + banked.xp;
+    user.xpRemainderMs = banked.remainderMs;
+    return { xp: user.xp };
+  });
+}
+
+export function accountXpSummary() {
+  const users = loadStore().users;
+  let xp = 0;
+  for (const user of users) xp += Math.max(0, Math.floor(Number(user.xp) || 0));
+  return { accounts: users.length, xp };
 }
 
 export function userBlocks(userId: string) {
@@ -562,6 +623,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
         guestId: clampGuestId(body.guestId),
         name: clampName(body.name),
         color: clampColor(body.color),
+        look: clampLook(body.look),
       });
       const session = mintSession(store, user);
       return { user, token: session.token, isNew };
@@ -570,7 +632,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
       json(res, 401, { ok: false, error: result.error });
       return;
     }
-    if (result.isNew) void recordSignup();
     json(res, 200, { ok: true, token: result.token, user: publicUser(result.user) });
     return;
   }
@@ -600,11 +661,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
         guestId: clampGuestId(body.guestId),
         name: clampName(body.name) || google.name,
         color: clampColor(body.color),
+        look: clampLook(body.look),
       });
       const session = mintSession(store, user);
       return { user, token: session.token, isNew };
     });
-    if (result.isNew) void recordSignup();
     json(res, 200, { ok: true, token: result.token, user: publicUser(result.user) });
     return;
   }
@@ -625,10 +686,23 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
       json(res, 400, { ok: false, error: "bad name" });
       return;
     }
+    const company = clampCompany(body.company);
+    const profileUrl = clampProfileUrl(body.profileUrl);
+    if (String(body.profileUrl ?? "").trim() && !profileUrl) {
+      json(res, 400, { ok: false, error: "bad profile link" });
+      return;
+    }
     const found = await withStore((store) => {
       const hit = sessionOf(store, bearer(req));
       if (!hit) return null;
       hit.user.name = name;
+      hit.user.company = company || undefined;
+      hit.user.profileUrl = profileUrl || undefined;
+      const look = clampLook(body.look);
+      if (look) {
+        hit.user.look = look;
+        hit.user.color = look.shirt;
+      }
       return hit.user;
     });
     if (!found) {

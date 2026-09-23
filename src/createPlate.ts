@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import {
+  ENV_SCALE,
   SCALE,
   cellToWorld,
   getItemSize,
@@ -35,6 +36,13 @@ export const TILE: Record<CellKind, number> = {
   parking: 0x3c3e46,
 };
 
+/** Rec / kitchen / elevator sit on the hallway floor instead of a tinted plane. */
+const HALL_FLOOR: Partial<Record<CellKind, true>> = {
+  elevator: true,
+  kitchen: true,
+  recreation: true,
+};
+
 export function createGround(plate: FloorPlate) {
   const root = new THREE.Group();
   root.name = "ground";
@@ -67,11 +75,12 @@ function fillTiles(tiles: THREE.Group, plate: FloorPlate) {
       const ch = plate.cells[row][col];
       const kind = CHAR_KIND[ch];
       if (!kind) continue;
+      const floor = HALL_FLOOR[kind] ? "channel" : kind;
       const mesh = new THREE.Mesh(
         geo,
         new THREE.MeshStandardMaterial({
-          color: TILE[kind],
-          roughness: kind === "channel" ? 0.85 : 0.95,
+          color: TILE[floor],
+          roughness: floor === "channel" ? 0.85 : 0.95,
           emissive: 0x000000,
         }),
       );
@@ -107,7 +116,7 @@ export function refreshGround(ground: THREE.Group, plate: FloorPlate) {
   }
 }
 
-export const STORY_H = 1.08;
+export const STORY_H = 1.08 * ENV_SCALE;
 export const STORY_COUNT = 10;
 
 export type ParkingStall = {
@@ -168,7 +177,7 @@ export function createRoof(plate: FloorPlate) {
     color: 0x6a6560,
     roughness: 0.92,
   });
-  const thick = 0.12;
+  const thick = 0.12 * ENV_SCALE;
   const edges: { dc: number; dr: number; alongX: boolean }[] = [
     { dc: 0, dr: -1, alongX: true },
     { dc: 0, dr: 1, alongX: true },
@@ -235,7 +244,7 @@ export function createRoof(plate: FloorPlate) {
     new THREE.BoxGeometry(w + 0.16, 0.1, d + 0.16),
     roofMat,
   );
-  cap.position.set(wx + w / 2, STORY_COUNT * STORY_H + 0.04, wz + d / 2);
+  cap.position.set(wx + w / 2, STORY_COUNT * STORY_H + 0.04 * ENV_SCALE, wz + d / 2);
   cap.receiveShadow = true;
   cap.castShadow = true;
   root.add(cap);
@@ -457,6 +466,32 @@ function grassSize(plate: FloorPlate) {
   };
 }
 
+/** World XZ box the orbit target may sit in: indoor footprint plus a sliver of sidewalk. */
+export function cameraPanBounds(plate: FloorPlate) {
+  const cell = plate.grid.cellSize * SCALE;
+  const pad = cell * 0.6;
+  const indoor = indoorBounds(plate);
+  if (!Number.isFinite(indoor.minC)) {
+    const [x0, , z0] = cellToWorld(0, 0, plate);
+    const [x1, , z1] = cellToWorld(plate.grid.cols, plate.grid.rows, plate);
+    return {
+      minX: Math.min(x0, x1),
+      maxX: Math.max(x0, x1),
+      minZ: Math.min(z0, z1),
+      maxZ: Math.max(z0, z1),
+    };
+  }
+  const [westX, , northZ] = cellToWorld(indoor.minC, indoor.minR, plate);
+  const southZ = northZ + (indoor.maxR - indoor.minR + 1) * cell;
+  const eastX = westX + (indoor.maxC - indoor.minC + 1) * cell;
+  return {
+    minX: westX - pad,
+    maxX: eastX + pad,
+    minZ: northZ - pad,
+    maxZ: southZ + pad,
+  };
+}
+
 function sidewalkForCol(plate: FloorPlate, col: number) {
   for (let row = 0; row < plate.grid.rows; row++) {
     if (kindAt(plate, col, row) === "sidewalk") return row;
@@ -601,9 +636,9 @@ export function createWallSegment(
   const [wx, , wz] = toWorld(item.x, item.y, plate);
   const ww = width * SCALE;
   const wd = height * SCALE;
-  const h = 1.05;
+  const h = 1.05 * ENV_SCALE;
   const group = new THREE.Group();
-  group.position.set(wx, item.elevation ?? 0, wz);
+  group.position.set(wx, (item.elevation ?? 0) * ENV_SCALE, wz);
   const inner = new THREE.Group();
   inner.position.set(ww / 2, 0, wd / 2);
   inner.rotation.y = itemRotation(item);
@@ -622,12 +657,12 @@ export function createWallSegment(
   const base = new THREE.Mesh(
     new THREE.BoxGeometry(
       Math.max(ww - WALL_SHRINK, 0.02),
-      0.06,
+      0.06 * ENV_SCALE,
       Math.max(wd - WALL_SHRINK, 0.02),
     ),
     baseMat,
   );
-  base.position.y = 0.03;
+  base.position.y = 0.03 * ENV_SCALE;
   inner.add(base);
   group.add(inner);
   group.userData.item = item;
@@ -662,19 +697,19 @@ export function createHingedDoor(
     frame.add(jamb(-leafLen / 2, 0, leafThick, frameMat));
     frame.add(jamb(leafLen / 2, 0, leafThick, frameMat));
     const lintel = new THREE.Mesh(
-      new THREE.BoxGeometry(leafLen + 0.08, 0.24, leafThick + 0.05),
+      new THREE.BoxGeometry(leafLen + 0.08, 0.24 * ENV_SCALE, leafThick + 0.05),
       frameMat,
     );
-    lintel.position.set(0, 1.09, 0);
+    lintel.position.set(0, 1.09 * ENV_SCALE, 0);
     frame.add(lintel);
   } else {
     frame.add(jamb(0, -leafLen / 2, leafThick, frameMat, true));
     frame.add(jamb(0, leafLen / 2, leafThick, frameMat, true));
     const lintel = new THREE.Mesh(
-      new THREE.BoxGeometry(leafThick + 0.05, 0.24, leafLen + 0.08),
+      new THREE.BoxGeometry(leafThick + 0.05, 0.24 * ENV_SCALE, leafLen + 0.08),
       frameMat,
     );
-    lintel.position.set(0, 1.09, 0);
+    lintel.position.set(0, 1.09 * ENV_SCALE, 0);
     frame.add(lintel);
   }
 
@@ -685,12 +720,12 @@ export function createHingedDoor(
   const leaf = new THREE.Mesh(
     new THREE.BoxGeometry(
       alongX ? leafLen - 0.08 : Math.max(leafThick * 0.5, 0.03),
-      0.94,
+      0.94 * ENV_SCALE,
       alongX ? Math.max(leafThick * 0.5, 0.03) : leafLen - 0.08,
     ),
     leafMat,
   );
-  leaf.position.y = 0.5;
+  leaf.position.y = 0.5 * ENV_SCALE;
   leaf.castShadow = true;
   leaf.receiveShadow = true;
 
@@ -759,10 +794,10 @@ function jamb(
   alongZ = false,
 ) {
   const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(alongZ ? thick + 0.03 : 0.05, 1.2, alongZ ? 0.05 : thick + 0.03),
+    new THREE.BoxGeometry(alongZ ? thick + 0.03 : 0.05, 1.2 * ENV_SCALE, alongZ ? 0.05 : thick + 0.03),
     mat,
   );
-  mesh.position.set(x, 0.6, z);
+  mesh.position.set(x, 0.6 * ENV_SCALE, z);
   return mesh;
 }
 
@@ -789,12 +824,12 @@ export function createWindow(
   const frame = new THREE.Group();
   frame.position.set(cx, 0, cz);
 
-  const sillH = 0.32;
-  const head = 0.95;
-  const lintelH = 0.08;
+  const sillH = 0.32 * ENV_SCALE;
+  const head = 0.95 * ENV_SCALE;
+  const lintelH = 0.08 * ENV_SCALE;
   const glassW = Math.max(frameLen - jambW * 2 + 0.04, 0.12);
-  const glassBottom = sillH - 0.03;
-  const glassTop = head + lintelH / 2 - 0.01;
+  const glassBottom = sillH - 0.03 * ENV_SCALE;
+  const glassTop = head + lintelH / 2 - 0.01 * ENV_SCALE;
   const glassH = Math.max(glassTop - glassBottom, 0.12);
 
   const sill = new THREE.Mesh(
@@ -863,7 +898,7 @@ export function createWindow(
   glass.position.set(0, (glassBottom + glassTop) / 2, 0);
   frame.add(glass);
 
-  const mullionH = head - sillH - 0.04;
+  const mullionH = head - sillH - 0.04 * ENV_SCALE;
   const mullion = new THREE.Mesh(
     new THREE.BoxGeometry(
       alongX ? 0.04 : frameTh * 0.7,
@@ -896,8 +931,8 @@ function addKitchenSplit(
   const row = borders[0].row;
   const [x0, , wz] = cellToWorld(minC, row + 1, plate);
   const [x1] = cellToWorld(maxC + 1, row + 1, plate);
-  const thick = 0.08;
-  const h = 1.05;
+  const thick = 0.08 * ENV_SCALE;
+  const h = 1.05 * ENV_SCALE;
   const len = Math.abs(x1 - x0);
   const cx = (x0 + x1) / 2;
   const group = new THREE.Group();
@@ -907,8 +942,8 @@ function addKitchenSplit(
   body.castShadow = true;
   body.receiveShadow = true;
   body.userData.blocksNav = true;
-  const base = new THREE.Mesh(new THREE.BoxGeometry(len, 0.06, thick), baseMat);
-  base.position.set(cx, 0.03, wz);
+  const base = new THREE.Mesh(new THREE.BoxGeometry(len, 0.06 * ENV_SCALE, thick), baseMat);
+  base.position.set(cx, 0.03 * ENV_SCALE, wz);
   group.add(body, base);
   root.add(group);
 }
@@ -920,16 +955,18 @@ function addElevatorShafts(root: THREE.Group, plate: FloorPlate) {
   const minC = Math.min(...borders.map((c) => c.col));
   const maxC = Math.max(...borders.map((c) => c.col));
   const row = borders[0].row;
-  const [wallX0, , wallZ] = cellToWorld(minC, row + 1, plate);
-  const [wallX1] = cellToWorld(maxC + 1, row + 1, plate);
+  // North edge of the E cells (hallway). Doors face +z / south into the lobby.
+  const [wallX0, , wallZ] = cellToWorld(minC, row, plate);
+  const [wallX1] = cellToWorld(maxC + 1, row, plate);
   const span = Math.abs(wallX1 - wallX0);
   const count = 4;
-  const gap = 0.1;
-  const thick = 0.08;
-  const h = 1.05;
-  const size = Math.min((span - gap * (count + 1)) / count, 1.42);
+  const gap = 0.1 * ENV_SCALE;
+  const thick = 0.08 * ENV_SCALE;
+  const h = 1.05 * ENV_SCALE;
+  const size = Math.min((span - gap * (count + 1)) / count, 1.42 * ENV_SCALE);
   const opening = size * 0.72;
   const xMin = Math.min(wallX0, wallX1);
+  const openEdge = "s";
   const mat = new THREE.MeshStandardMaterial({
     color: 0xb8c0c8,
     metalness: 0.55,
@@ -959,7 +996,7 @@ function addElevatorShafts(root: THREE.Group, plate: FloorPlate) {
 
   for (let i = 0; i < count; i++) {
     const cx = xMin + gap + size / 2 + i * (size + gap);
-    const cz = wallZ - thick / 2 - size / 2;
+    const cz = wallZ + thick / 2 + size / 2;
     const x0 = cx - size / 2;
     const z0 = cz - size / 2;
     const x1 = cx + size / 2;
@@ -979,7 +1016,7 @@ function addElevatorShafts(root: THREE.Group, plate: FloorPlate) {
       { id: "e", alongX: false, x: x1 - thick / 2, z: cz, len: size },
     ];
     for (const edge of edges) {
-      if (edge.id !== "n") {
+      if (edge.id !== openEdge) {
         box(
           edge.alongX ? edge.len : thick,
           edge.alongX ? thick : edge.len,
@@ -993,14 +1030,14 @@ function addElevatorShafts(root: THREE.Group, plate: FloorPlate) {
       const jamb = Math.max((edge.len - opening) / 2, 0.05);
       box(jamb, thick, edge.x - edge.len / 2 + jamb / 2, h / 2, edge.z, shaft);
       box(jamb, thick, edge.x + edge.len / 2 - jamb / 2, h / 2, edge.z, shaft);
-      const lintelH = 0.16;
+      const lintelH = 0.16 * ENV_SCALE;
       box(edge.len, thick, edge.x, h - lintelH / 2, edge.z, shaft, lintelH);
       const slit = 0.02;
       const doorW = opening / 2 - slit / 2;
       const doorH = h - lintelH - 0.02;
       const doorTh = 0.03;
       const doorY = doorH / 2;
-      const doorZ = edge.z + 0.012;
+      const doorZ = edge.z - 0.012;
       const left = new THREE.Mesh(new THREE.BoxGeometry(doorW, doorH, doorTh), doorMat);
       left.position.set(edge.x - doorW / 2 - slit / 2, doorY, doorZ);
       left.castShadow = true;

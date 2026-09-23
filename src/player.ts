@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { setAvatarPose } from "./createAvatars";
 import { toWorld } from "./coords";
 import { elevatorSpawn } from "./grid";
-import { attachLocomotion } from "./locomotion";
+import { attachLocomotion, type Locomotion } from "./locomotion";
 import type { Pose } from "./protocol";
 import type { Avatar, FloorPlate } from "./types";
 
@@ -51,7 +51,8 @@ export function attachPlayer(opts: {
   const pointer = new THREE.Vector2();
   const down = { x: 0, y: 0 };
   let poseAge = 0;
-  let pendingSit: { x: number; y: number; facing: number } | null = null;
+  let pendingSit: { x: number; y: number; facing: number; seatId?: string; seatY?: number } | null =
+    null;
 
   const spawn = elevatorSpawn(plate);
   player.visible = true;
@@ -112,7 +113,7 @@ export function attachPlayer(opts: {
     onMove?.(goal.x, goal.y, walk.pose().facing);
   });
 
-  const sitNow = (seat: { x: number; y: number; facing: number }) => {
+  const sitNow = (seat: { x: number; y: number; facing: number; seatId?: string; seatY?: number }) => {
     pendingSit = null;
     setAvatarPose(player, "sit");
     walk.snap({ ...seat, pose: "sit" });
@@ -137,6 +138,9 @@ export function attachPlayer(opts: {
     },
     pose: () => walk.pose(),
     moving: () => walk.moving(),
+    setCellBlocked(fn: Parameters<Locomotion["setCellBlocked"]>[0]) {
+      walk.setCellBlocked(fn);
+    },
     goTo(x: number, y: number, force = false) {
       pendingSit = null;
       if (avatar.pose === "sit") {
@@ -157,7 +161,7 @@ export function attachPlayer(opts: {
       onMove?.(goal.x, goal.y, walk.pose().facing);
       return true;
     },
-    goSit(seat: { x: number; y: number; facing: number }) {
+    goSit(seat: { x: number; y: number; facing: number; seatId?: string; seatY?: number }) {
       pendingSit = seat;
       if (avatar.pose === "sit") {
         setAvatarPose(player, "stand");

@@ -1,5 +1,8 @@
+import { LOOK_PARTS, randomLook, type AvatarLook, type LookPart } from "./avatarLook";
 import type { ChatChannel, Privacy } from "./protocol";
 import { timezoneLabel } from "./conferenceReserve";
+import { chatSoundOn, playChatSound, setChatSound } from "./chatSounds";
+import { XP_PER_MINUTE, xpRateLabel } from "./xp";
 
 type ChatTab = ChatChannel | "whisper" | "requests";
 
@@ -35,7 +38,16 @@ export type MacOfficeAdHandlers = {
 export function attachMac(opts: {
   root: HTMLElement;
   getName: () => string;
+  getCompany?: () => string;
+  getProfileUrl?: () => string;
+  getLook?: () => AvatarLook;
+  onLook?: (look: AvatarLook) => void;
   onName: (name: string) => boolean | Promise<boolean | void> | void;
+  onSaveProfile?: (opts: {
+    name: string;
+    company: string;
+    profileUrl: string;
+  }) => boolean | Promise<boolean | void> | void;
   getPrivacy: () => Privacy;
   onPrivacy: (privacy: Privacy) => void;
   hasDesk: () => boolean;
@@ -45,11 +57,11 @@ export function attachMac(opts: {
   onWhisperReply?: (fromId: string, accept: boolean) => void;
   onWhisperEnd?: (peerId: string) => void;
   onInspectPerson?: (peerId: string, name: string) => void;
+  onGoTo?: (deskId: string) => void;
   onChatAvailable?: (on: boolean) => void;
   onShareTz?: (on: boolean) => void;
   onKnockReply?: (fromId: string, accept: boolean) => void;
   onBlock?: (id: string, on: boolean) => void;
-  onDebugKnock?: () => void;
   onBoot?: () => void;
   auth?: MacAuth;
   officeAd?: MacOfficeAdHandlers;
@@ -76,6 +88,10 @@ export function attachMac(opts: {
   const chatIconBtn = root.querySelector<HTMLButtonElement>('[data-mac="chat"]');
   let chatTab: ChatTab = "floor";
   let chatOffice: string | null = null;
+  let unreadFloor = false;
+  let unreadRequests = false;
+  const unreadOffices = new Set<string>();
+  const unreadWhispers = new Set<string>();
   let claimed = false;
   let quiet = false;
   let whisperPeer: string | null = null;
@@ -87,9 +103,20 @@ export function attachMac(opts: {
   const privacyBtns = root.querySelectorAll<HTMLInputElement>("input[name='mac-privacy']");
   const alertEl = root.querySelector<HTMLElement>("#mac-alert")!;
   const alertBody = root.querySelector("#mac-alert-body")!;
-  const debugKnock = root.querySelector<HTMLButtonElement>("#mac-debug-knock");
   const bootBtn = root.querySelector<HTMLButtonElement>("#mac-boot");
+  const helpXp = root.querySelector<HTMLElement>("#mac-help-xp");
   let knockFrom = "";
+  if (helpXp) {
+    helpXp.replaceChildren();
+    const label = document.createElement("b");
+    label.textContent = "XP. ";
+    helpXp.append(
+      label,
+      document.createTextNode(
+        `${xpRateLabel()} on the clock — ${XP_PER_MINUTE} XP a minute, including while this tab sits in the background. It shows in the top left. Taking a desk does not add more. A guest visit lasts five minutes, then the clock stops until you sign in.`,
+      ),
+    );
+  }
 
   const syncSplit = () => {
     const chatting =
@@ -128,10 +155,15 @@ export function attachMac(opts: {
       opts.onPrivacy(btn.value as Privacy);
     });
   });
+  const companyInput = root.querySelector<HTMLInputElement>("#mac-company");
+  const profileUrlInput = root.querySelector<HTMLInputElement>("#mac-profile-url");
   nameInput.value = opts.getName();
+  if (companyInput) companyInput.value = opts.getCompany?.() ?? "";
+  if (profileUrlInput) profileUrlInput.value = opts.getProfileUrl?.() ?? "";
   const nameSave = root.querySelector<HTMLButtonElement>("#mac-name-save");
   const nameHint = root.querySelector<HTMLElement>("#mac-name-hint");
-  const nameHintRest = nameHint?.textContent ?? "This shows on your door plate.";
+  const nameHintRest =
+    nameHint?.textContent ?? "Name on your door. Company sits next to it on Floor. Profile link is on your card.";
   let nameHintTimer = 0;
   const flashName = (text: string, ok: boolean) => {
     if (!nameHint) return;
@@ -144,23 +176,87 @@ export function attachMac(opts: {
       nameHint.classList.remove("ok", "err");
     }, 1800);
   };
-  const commitName = () => {
+  const commitProfile = () => {
     const name = nameInput.value.trim();
     if (!name) {
       flashName("Type a name first.", false);
       return;
     }
-    void Promise.resolve(opts.onName(name)).then((ok) => {
+    const company = companyInput?.value.trim() ?? "";
+    const profileUrl = profileUrlInput?.value.trim() ?? "";
+    const save = opts.onSaveProfile
+      ? opts.onSaveProfile({ name, company, profileUrl })
+      : opts.onName(name);
+    void Promise.resolve(save).then((ok) => {
       flashName(ok === false ? "Couldn't save." : "Saved.", ok !== false);
     });
   };
-  nameInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      commitName();
+  const profileEnter = (event: KeyboardEvent) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    commitProfile();
+  };
+  nameInput.addEventListener("keydown", profileEnter);
+  companyInput?.addEventListener("keydown", profileEnter);
+  profileUrlInput?.addEventListener("keydown", profileEnter);
+  nameSave?.addEventListener("click", commitProfile);
+
+  const lookRows = root.querySelector<HTMLElement>("#mac-look-rows");
+  const genderButtons = Array.from(root.querySelectorAll<HTMLButtonElement>(".mac-gender button"));
+  const randomLookBtn = root.querySelector<HTMLButtonElement>("#mac-look-random");
+  let shownLook: AvatarLook | null = opts.getLook?.() ?? null;
+  const paintLook = (look: AvatarLook) => {
+    shownLook = look;
+    for (const button of genderButtons) {
+      const on = button.dataset.gender === look.gender;
+      button.classList.toggle("on", on);
+      button.setAttribute("aria-pressed", on ? "true" : "false");
     }
+    for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>(".mac-swatch"))) {
+      const on = button.dataset.color === look[button.dataset.part as LookPart];
+      button.classList.toggle("on", on);
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  };
+  if (lookRows && shownLook) {
+    for (const part of LOOK_PARTS) {
+      const row = document.createElement("div");
+      row.className = "mac-swatch-row";
+      const label = document.createElement("span");
+      label.textContent = part.label;
+      const swatches = document.createElement("div");
+      swatches.className = "mac-swatches";
+      for (const color of part.colors) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "mac-swatch";
+        button.dataset.part = part.key;
+        button.dataset.color = color;
+        button.style.background = color;
+        button.title = color;
+        button.setAttribute("aria-label", `${part.label} ${color}`);
+        button.addEventListener("click", () => {
+          if (!shownLook) return;
+          opts.onLook?.({ ...shownLook, [part.key]: color });
+        });
+        swatches.append(button);
+      }
+      row.append(label, swatches);
+      lookRows.append(row);
+    }
+    paintLook(shownLook);
+  }
+  for (const button of genderButtons) {
+    button.addEventListener("click", () => {
+      const gender = button.dataset.gender === "m" ? "m" : "f";
+      if (!shownLook || shownLook.gender === gender) return;
+      opts.onLook?.({ ...shownLook, gender });
+    });
+  }
+  randomLookBtn?.addEventListener("click", () => {
+    if (!shownLook) return;
+    opts.onLook?.(randomLook(shownLook.gender, shownLook));
   });
-  nameSave?.addEventListener("click", commitName);
 
   const accountIn = root.querySelector<HTMLElement>("#mac-account-in");
   const accountOut = root.querySelector<HTMLElement>("#mac-account-out");
@@ -486,6 +582,7 @@ export function attachMac(opts: {
   };
 
   const closeWhisper = (peerId: string) => {
+    unreadWhispers.delete(peerId);
     const selected = chatTab === "whisper" && whisperPeer === peerId;
     const idx = whisperThreads.findIndex((t) => t.peerId === peerId);
     if (idx >= 0) whisperThreads.splice(idx, 1);
@@ -509,7 +606,7 @@ export function attachMac(opts: {
     preview: string,
     on: boolean,
     click: () => void,
-    extra?: { badge?: number; onEnd?: () => void },
+    extra?: { badge?: number; unread?: boolean; onEnd?: () => void },
   ) => {
     if (!whisperPeople) return;
     const row = document.createElement("div");
@@ -524,6 +621,12 @@ export function attachMac(opts: {
       badge.className = "mac-tab-badge";
       badge.textContent = extra.badge > 9 ? "9+" : String(extra.badge);
       name.append(" ", badge);
+    }
+    if (extra?.unread) {
+      const dot = document.createElement("span");
+      dot.className = "mac-unread";
+      dot.title = "New";
+      name.append(dot);
     }
     const sub = document.createElement("span");
     sub.textContent = preview;
@@ -548,27 +651,31 @@ export function attachMac(opts: {
     if (!whisperPeople) return;
     whisperPeople.replaceChildren();
     const inOffice = Boolean(chatOffice);
+    const inConference = Boolean(chatOffice?.startsWith("conf"));
     addChannel("Floor", "everyone here", chatTab === "floor", () => {
+      unreadFloor = false;
       chatTab = "floor";
       paintChat();
       chatInput.focus();
-    });
+    }, { unread: unreadFloor });
     if (inOffice) {
-      addChannel("Office", "this room", chatTab === "office", () => {
+      addChannel(inConference ? "Conference" : "Office", "this room", chatTab === "office", () => {
+        if (chatOffice) unreadOffices.delete(chatOffice);
         chatTab = "office";
         paintChat();
         chatInput.focus();
-      });
+      }, { unread: Boolean(chatOffice && unreadOffices.has(chatOffice)) });
     }
     addChannel(
       "Requests",
       inbox.length ? `${inbox.length} waiting` : "none",
       chatTab === "requests",
       () => {
+        unreadRequests = false;
         chatTab = "requests";
         paintChat();
       },
-      { badge: inbox.length },
+      { badge: inbox.length, unread: unreadRequests },
     );
     for (const thread of whisperThreads) {
       addChannel(
@@ -576,12 +683,14 @@ export function attachMac(opts: {
         thread.pending ? "waiting…" : thread.last || (thread.open ? "connected" : ""),
         chatTab === "whisper" && whisperPeer === thread.peerId,
         () => {
+          unreadWhispers.delete(thread.peerId);
           whisperPeer = thread.peerId;
           chatTab = "whisper";
           paintChat();
           chatInput.focus();
         },
         {
+          unread: unreadWhispers.has(thread.peerId),
           onEnd: () => {
             opts.onWhisperEnd?.(thread.peerId);
             closeWhisper(thread.peerId);
@@ -629,7 +738,9 @@ export function attachMac(opts: {
     chatInput.placeholder = quiet
       ? "Quiet — library"
       : chatTab === "office"
-        ? "Message this office…"
+        ? chatOffice?.startsWith("conf")
+          ? "Message this conference…"
+          : "Message this office…"
         : chatTab === "whisper"
           ? thread?.pending
             ? "Waiting…"
@@ -722,6 +833,16 @@ export function attachMac(opts: {
       opts.onShareTz?.(shareTzBox.checked);
     });
   }
+  for (const kind of ["floor", "office", "whisper"] as const) {
+    const box = root.querySelector<HTMLInputElement>(`#mac-sound-${kind}`);
+    if (!box) continue;
+    box.checked = chatSoundOn(kind);
+    box.addEventListener("change", () => {
+      const on = box.checked;
+      setChatSound(kind, on);
+      if (on) playChatSound(kind);
+    });
+  }
   chatForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const text = chatInput.value.trim();
@@ -770,7 +891,6 @@ export function attachMac(opts: {
       opts.onBlock?.(fromId, true);
     }
   });
-  debugKnock?.addEventListener("click", () => opts.onDebugKnock?.());
   bootBtn?.addEventListener("click", () => {
     if (!opts.hasDesk()) return;
     opts.onBoot?.();
@@ -781,6 +901,15 @@ export function attachMac(opts: {
   });
   showPanel("mac-chat");
   paintChat();
+
+  const seeingChat = (tab: ChatTab, id?: string) => {
+    const panel = root.querySelector<HTMLElement>("#mac-chat");
+    const open = Boolean(panel && !panel.hidden && !root.classList.contains("collapsed"));
+    if (!open || chatTab !== tab) return false;
+    if (tab === "office") return chatOffice === id;
+    if (tab === "whisper") return whisperPeer === id;
+    return true;
+  };
 
   return {
     setPrivacy(privacy: Privacy) {
@@ -810,6 +939,15 @@ export function attachMac(opts: {
     },
     setName(name: string) {
       if (document.activeElement !== nameInput) nameInput.value = name;
+    },
+    setCompany(company: string) {
+      if (companyInput && document.activeElement !== companyInput) companyInput.value = company;
+    },
+    setProfileUrl(url: string) {
+      if (profileUrlInput && document.activeElement !== profileUrlInput) profileUrlInput.value = url;
+    },
+    setLook(look: AvatarLook) {
+      paintLook(look);
     },
     setAccount(email?: string) {
       paintAccount(email);
@@ -879,6 +1017,7 @@ export function attachMac(opts: {
     addWhisper(name: string, text: string, peerId: string, self = false, fromId?: string) {
       const thread = whisperThreads.find((t) => t.peerId === peerId);
       if (thread) thread.last = text;
+      if (!self && !seeingChat("whisper", peerId)) unreadWhispers.add(peerId);
       const list = whisperLogs.get(peerId) ?? [];
       const prev = list[list.length - 1];
       const row = pushMsg(list, name, text, self, fromId ?? (self ? undefined : peerId));
@@ -887,9 +1026,10 @@ export function attachMac(opts: {
         if (row !== prev) chatLogWhisper.appendChild(row);
         chatLogWhisper.scrollTop = chatLogWhisper.scrollHeight;
       }
-      if (chatTab === "whisper") paintChannels();
+      paintChannels();
     },
     addWhisperRequest(fromId: string, fromName: string, text?: string) {
+      if (!seeingChat("requests")) unreadRequests = true;
       const existing = inbox.find((item) => item.kind === "whisper" && item.fromId === fromId);
       if (existing) existing.text = text ?? "";
       else inbox.push({ kind: "whisper", fromId, fromName, text: text ?? "" });
@@ -923,9 +1063,11 @@ export function attachMac(opts: {
       rows: {
         peerId: string;
         name: string;
+        deskId?: string;
         desk: string;
         privacy: string;
         time: string;
+        company?: string;
         self?: boolean;
         blocked?: boolean;
         chatAvailable?: boolean;
@@ -941,25 +1083,34 @@ export function attachMac(opts: {
       }
       if (hint) {
         hint.textContent =
-          "People checked into an office. Whisper if they're available. Block hides their floor chat, knocks, and keeps them out of your office.";
+          "People checked into an office. Go to walks you there. Whisper if they're available. Block hides their floor chat, knocks, and keeps them out of your office.";
       }
       for (const row of rows) {
         const el = document.createElement("div");
         el.className = "mac-floor-row" + (row.self ? " self" : "") + (row.blocked ? " blocked" : "");
         const mode = row.privacy === "focus" ? "Focus" : row.privacy === "busy" ? "Busy" : "Open";
-        el.innerHTML = `<div class="mac-floor-who"><b></b><span></span></div><div class="mac-floor-meta"><div class="mac-floor-time"></div></div>`;
-        el.querySelector("b")!.textContent = row.name;
+        el.innerHTML =
+          `<div class="mac-floor-main"><div class="mac-floor-who"><b></b><span></span></div><div class="mac-floor-time"></div></div><div class="mac-floor-actions"></div>`;
+        const label = row.company ? `${row.name} · ${row.company}` : row.name;
+        el.querySelector("b")!.textContent = label;
         el.querySelector("span")!.textContent = `${row.desk} · ${mode}`;
         el.querySelector(".mac-floor-time")!.textContent = row.time;
+        const actions = el.querySelector(".mac-floor-actions")!;
+        if (row.deskId) {
+          const go = document.createElement("button");
+          go.type = "button";
+          go.className = "mac-floor-goto";
+          go.textContent = "Go to";
+          go.addEventListener("click", (event) => {
+            event.stopPropagation();
+            opts.onGoTo?.(row.deskId!);
+          });
+          actions.appendChild(go);
+        }
         if (!row.self) {
           const whisper = document.createElement("button");
           whisper.type = "button";
           whisper.className = "mac-floor-whisper";
-          const canWhisper =
-            Boolean(row.chatAvailable) &&
-            row.privacy !== "busy" &&
-            row.privacy !== "focus" &&
-            !row.blocked;
           whisper.textContent = "Whisper";
           whisper.title = "Open whisper card";
           const inspect = (event: Event) => {
@@ -981,8 +1132,8 @@ export function attachMac(opts: {
             event.stopPropagation();
             opts.onBlock?.(row.peerId, !row.blocked);
           });
-          el.querySelector(".mac-floor-meta")!.appendChild(whisper);
-          el.querySelector(".mac-floor-meta")!.appendChild(btn);
+          actions.appendChild(whisper);
+          actions.appendChild(btn);
         }
         list.appendChild(el);
       }
@@ -1016,12 +1167,16 @@ export function attachMac(opts: {
         const prev = list[list.length - 1];
         const row = pushMsg(list, name, text, self, fromId);
         officeLogs.set(id, list);
+        if (!self && !seeingChat("office", id)) unreadOffices.add(id);
         if (chatTab === "office" && chatOffice === id) {
           if (row !== prev) chatLogOffice.appendChild(row);
           chatLogOffice.scrollTop = chatLogOffice.scrollHeight;
         }
+        paintChannels();
         return;
       }
+      if (!self && !seeingChat("floor")) unreadFloor = true;
+      paintChannels();
       const last = chatLogFloor.lastElementChild as HTMLElement | null;
       if (last && sameSpeaker(last, name, self, fromId)) {
         addBubble(last, text);

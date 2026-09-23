@@ -1,4 +1,6 @@
 import * as THREE from "three";
+import { SCALE } from "./coords";
+import type { OfficeInstance } from "./types";
 
 const AD_NAME = "office-ad";
 const OUTSET = 0.055;
@@ -113,6 +115,7 @@ function decorateGlass(glass: THREE.Mesh, mat: THREE.MeshStandardMaterial) {
   const root = new THREE.Group();
   root.name = AD_NAME;
   root.userData.officeAd = true;
+  root.visible = false;
   const mag = glassTh / 2 + OUTSET;
   const edge = String(glass.userData.windowEdge ?? "s");
   const outward = edge === "n" || edge === "w" ? -1 : 1;
@@ -129,15 +132,40 @@ function decorateGlass(glass: THREE.Mesh, mat: THREE.MeshStandardMaterial) {
   glass.add(root);
 }
 
+function mountInteriorBackWall(group: THREE.Object3D, tex: THREE.Texture) {
+  const inst = group.userData.office as OfficeInstance | undefined;
+  const cell = Number(group.userData.cellSize) || 179;
+  const cols = inst?.cols ?? 1;
+  const rows = inst?.rows ?? 1;
+  const worldW = cols * cell * SCALE;
+  const worldD = rows * cell * SCALE;
+  const wall = 8 * SCALE;
+  const w = worldW * 0.78;
+  const h = 1.28;
+  const z = worldD / 2 - wall - 0.05;
+  const mat = adMaterial(tex);
+  const root = new THREE.Group();
+  root.name = AD_NAME;
+  root.userData.officeAd = true;
+  root.visible = false;
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+  mesh.name = "office-ad-pane";
+  mesh.userData.officeAd = true;
+  mesh.position.set(0, 0.72, z);
+  mesh.rotation.y = Math.PI;
+  root.add(mesh);
+  group.add(root);
+}
+
 function mountAd(group: THREE.Object3D, tex: THREE.Texture) {
+  clearOfficeAd(group);
   const glasses = backWallGlasses(group);
-  if (!glasses.length) {
-    tex.dispose();
+  if (glasses.length) {
+    const mat = adMaterial(tex);
+    for (const pane of glasses) decorateGlass(pane, mat);
     return;
   }
-  clearOfficeAd(group);
-  const mat = adMaterial(tex);
-  for (const pane of glasses) decorateGlass(pane, mat);
+  mountInteriorBackWall(group, tex);
 }
 
 function mountedOnTargets(group: THREE.Object3D, glasses: THREE.Mesh[]) {
@@ -145,6 +173,78 @@ function mountedOnTargets(group: THREE.Object3D, glasses: THREE.Mesh[]) {
 }
 
 const loader = new THREE.TextureLoader();
+export const FILL_AD_PREFIX = "fill-ad:";
+
+const adRay = new THREE.Raycaster();
+
+export function pickOfficeAd(
+  camera: THREE.Camera,
+  pointer: THREE.Vector2,
+  roots: THREE.Object3D[],
+): { deskId: string } | null {
+  adRay.setFromCamera(pointer, camera);
+  const hits = adRay.intersectObjects(roots, true);
+  for (const hit of hits) {
+    let node: THREE.Object3D | null = hit.object;
+    let sawAd = false;
+    while (node) {
+      if (node.userData?.officeAd || node.name === AD_NAME || node.name === "office-ad-pane") {
+        sawAd = true;
+      }
+      const office = node.userData?.office as OfficeInstance | undefined;
+      if (sawAd && office?.id) return { deskId: office.id };
+      node = node.parent;
+    }
+  }
+  return null;
+}
+
+export function setOfficeAdVisible(group: THREE.Object3D, visible: boolean) {
+  group.traverse((node) => {
+    if (node.name === AD_NAME) node.visible = visible;
+  });
+}
+
+function hashHue(value: string) {
+  let h = 0;
+  for (let i = 0; i < value.length; i++) h = (h * 31 + value.charCodeAt(i)) >>> 0;
+  return h % 360;
+}
+
+function makeFillAdTexture(url: string) {
+  const id = url.slice(FILL_AD_PREFIX.length) || "office";
+  const hue = hashHue(id);
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 512;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+  const g = ctx.createLinearGradient(0, 0, 80, 512);
+  g.addColorStop(0, `hsl(${hue} 58% 44%)`);
+  g.addColorStop(1, `hsl(${(hue + 38) % 360} 48% 16%)`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 512, 512);
+  ctx.fillStyle = "rgba(244,240,232,0.12)";
+  ctx.fillRect(28, 28, 456, 456);
+  ctx.fillStyle = "#f4f0e8";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = "700 28px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("HUMANS AT WORK", 256, 188);
+  ctx.font = "700 64px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText(id.replace(/^office_/, "").toUpperCase().slice(0, 8), 256, 268);
+  ctx.font = "600 22px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("window ad", 256, 338);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  tex.needsUpdate = true;
+  return tex;
+}
 
 export function applyOfficeAd(group: THREE.Object3D, url: string | null) {
   const prev = group.userData.officeAdUrl as string | undefined;
@@ -155,10 +255,16 @@ export function applyOfficeAd(group: THREE.Object3D, url: string | null) {
     return;
   }
   const targets = backWallGlasses(group);
-  if (prev === url && group.getObjectByName(AD_NAME) && mountedOnTargets(group, targets)) return;
+  if (prev === url && group.getObjectByName(AD_NAME) && (!targets.length || mountedOnTargets(group, targets))) {
+    return;
+  }
   const gen = (Number(group.userData.officeAdGen) || 0) + 1;
   group.userData.officeAdGen = gen;
   group.userData.officeAdUrl = url;
+  if (url.startsWith(FILL_AD_PREFIX)) {
+    mountAd(group, makeFillAdTexture(url));
+    return;
+  }
   loader.load(
     url,
     (tex) => {

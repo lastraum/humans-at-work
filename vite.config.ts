@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig, type Plugin } from "vite";
 import { authPlugin } from "./server/auth";
-import { metricsPlugin } from "./server/metrics";
+import { presencePlugin } from "./server/presence";
 import { floorRoomPlugin } from "./server/floorRoom";
 import { livekitGatePlugin } from "./server/livekitGate";
 
@@ -76,15 +76,15 @@ function floorPlatePlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [floorPlatePlugin(), floorRoomPlugin(), livekitGatePlugin(), authPlugin(), metricsPlugin()],
+  plugins: [floorPlatePlugin(), floorRoomPlugin(), livekitGatePlugin(), authPlugin(), presencePlugin()],
   server: {
     port: 5885,
     host: true,
-    allowedHosts: ["humans.lastslice.co", ".lastslice.co"],
+    allowedHosts: ["humansat.work", "www.humansat.work"],
     watch: {
-      ignored: ["**/data/floor-plate.json", "**/data/accounts.json", "**/data/metrics.json", "**/data/office-ads/**"],
+      ignored: ["**/data/floor-plate.json", "**/data/accounts.json", "**/data/metrics.json", "**/data/presence.json", "**/data/presence.json.tmp", "**/data/office-ads/**"],
     },
-    fs: { deny: [".env", ".env.*", "*.{crt,pem}", "**/.git/**", "**/data/accounts.json", "**/data/metrics.json"] },
+    fs: { deny: [".env", ".env.*", "*.{crt,pem}", "**/.git/**", "**/data/accounts.json", "**/data/metrics.json", "**/data/presence.json"] },
   },
   publicDir: "public",
 });

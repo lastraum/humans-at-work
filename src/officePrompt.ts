@@ -135,7 +135,7 @@ function drawBubble(ctx: CanvasRenderingContext2D, title: string, subtitle: stri
   drawCross(ctx, NO.x, NO.y, NO.r);
 }
 
-export type Seat = { x: number; y: number; facing: number };
+export type Seat = { x: number; y: number; facing: number; seatId?: string; seatY?: number };
 export type PromptKind = "claim" | "leave" | "sit" | "knock" | "whisper" | null;
 export type PromptPeer = { id: string; name: string };
 

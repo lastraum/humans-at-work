@@ -23,6 +23,7 @@ export function collectColliders(roots: THREE.Object3D | THREE.Object3D[]): Coll
       if (node.userData?.blocksNav) {
         _box.setFromObject(node);
         if (_box.isEmpty()) return;
+        if (_box.min.y > 0.45) return;
         out.push({
           minX: _box.min.x,
           maxX: _box.max.x,
@@ -37,6 +38,9 @@ export function collectColliders(roots: THREE.Object3D | THREE.Object3D[]): Coll
       if (!blocksNavigation(item.type)) return;
       _box.setFromObject(node);
       if (_box.isEmpty()) return;
+      // Door lintels and upper cabinets sit above head height. Their footprint
+      // was sealing the doorway, which trapped the player in the elevator.
+      if (_box.min.y > 0.45) return;
       out.push({
         minX: _box.min.x,
         maxX: _box.max.x,
@@ -73,18 +77,22 @@ function walkableKind(kind: CellKind | null, inside: boolean) {
   return inside && INDOOR_WALKABLE.includes(kind);
 }
 
+export type CellBlocked = (col: number, row: number) => boolean;
+
 export function canStandAt(
   wx: number,
   wz: number,
   plate: FloorPlate,
   inside: boolean,
   colliders: Collider[],
+  cellBlocked?: CellBlocked | null,
 ) {
   const canvas = fromWorld(wx, wz, plate);
   const col = Math.floor(canvas.x / plate.grid.cellSize);
   const row = Math.floor(canvas.y / plate.grid.cellSize);
   const kind = kindAt(plate, col, row);
   if (!walkableKind(kind, inside)) return false;
+  if (cellBlocked?.(col, row)) return false;
   if (hitsCollider(wx, wz, colliders)) return false;
   return true;
 }
@@ -102,6 +110,7 @@ export function astarWorld(
   plate: FloorPlate,
   inside: boolean,
   colliders: Collider[],
+  cellBlocked?: CellBlocked | null,
 ): { x: number; y: number }[] | null {
   const snap = (n: number) => Math.round(n / NAV_STEP) * NAV_STEP;
   const start: Node = { x: snap(startCanvas.x), y: snap(startCanvas.y) };
@@ -143,7 +152,7 @@ export function astarWorld(
     ]) {
       const next = { x: cur.x + dx, y: cur.y + dy };
       const [wx, , wz] = toWorld(next.x, next.y, plate);
-      if (!canStandAt(wx, wz, plate, inside, colliders)) continue;
+      if (!canStandAt(wx, wz, plate, inside, colliders, cellBlocked)) continue;
       const fromKind = kindAt(
         plate,
         Math.floor(cur.x / plate.grid.cellSize),
@@ -172,8 +181,9 @@ export function snapToStandable(
   plate: FloorPlate,
   inside: boolean,
   colliders: Collider[],
+  cellBlocked?: CellBlocked | null,
 ) {
-  if (canStandAt(wx, wz, plate, inside, colliders)) return { x: wx, z: wz };
+  if (canStandAt(wx, wz, plate, inside, colliders, cellBlocked)) return { x: wx, z: wz };
   const step = NAV_STEP * SCALE;
   for (let ring = 1; ring <= 10; ring++) {
     for (let dx = -ring; dx <= ring; dx++) {
@@ -181,7 +191,7 @@ export function snapToStandable(
         if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;
         const x = wx + dx * step;
         const z = wz + dz * step;
-        if (canStandAt(x, z, plate, inside, colliders)) return { x, z };
+        if (canStandAt(x, z, plate, inside, colliders, cellBlocked)) return { x, z };
       }
     }
   }
@@ -195,16 +205,17 @@ export function tryMove(
   plate: FloorPlate,
   inside: boolean,
   colliders: Collider[],
+  cellBlocked?: CellBlocked | null,
 ) {
   const nx = from.x + dx;
   const nz = from.z + dz;
-  if (canStandAt(nx, nz, plate, inside, colliders)) {
+  if (canStandAt(nx, nz, plate, inside, colliders, cellBlocked)) {
     return { x: nx, z: nz };
   }
-  if (canStandAt(nx, from.z, plate, inside, colliders)) {
+  if (canStandAt(nx, from.z, plate, inside, colliders, cellBlocked)) {
     return { x: nx, z: from.z };
   }
-  if (canStandAt(from.x, nz, plate, inside, colliders)) {
+  if (canStandAt(from.x, nz, plate, inside, colliders, cellBlocked)) {
     return { x: from.x, z: nz };
   }
   return null;

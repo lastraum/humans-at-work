@@ -4,16 +4,75 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Humans at Work — floor plate</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #16122a;
+      }
+      body:not(.ready) > :not(#boot) {
+        display: none !important;
+      }
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 30;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #16122a;
+        font-family: Chicago, Geneva, Charcoal, "Lucida Grande", "Segoe UI", sans-serif;
+      }
+      body.ready #boot {
+        display: none;
+      }
+      #boot-card {
+        width: min(320px, calc(100vw - 32px));
+        background: #dddddd;
+        color: #111;
+        border: 2px solid #000;
+        box-shadow: 6px 6px 0 #000;
+        font-size: 13px;
+      }
+      #boot-bar {
+        height: 18px;
+        padding: 0 8px;
+        background: repeating-linear-gradient(to bottom, #000 0 1px, #fff 1px 2px);
+        font-weight: 700;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        line-height: 18px;
+        text-align: center;
+      }
+      #boot-bar span {
+        background: #dddddd;
+        padding: 0 8px;
+      }
+      #boot-card p {
+        margin: 0;
+        padding: 22px 16px 24px;
+        text-align: center;
+      }
+    </style>
   </head>
   <body>
-    <div id="hud">
-      <div class="hud-top">
-        <div class="title">Humans at Work</div>
-        <button type="button" id="edit-toggle">Edit</button>
-        <div id="zoom-readout">zoom —</div>
-        <div id="floor-readout" hidden>floor 1</div>
+    <div id="boot">
+      <div id="boot-card">
+        <div id="boot-bar"><span>Humans at Work</span></div>
+        <p>Opening the office…</p>
       </div>
+    </div>
+    <div id="hud">
+      <div class="title">Humans at Work</div>
+      <div id="you-clock">
+        <b id="hud-xp">0 XP</b>
+        <b id="hud-clock">0:00</b>
+      </div>
+      <div id="floor-readout" hidden>floor 1</div>
       <div id="status">loading plate…</div>
+    </div>
+    <div id="hud-side">
       <div id="tool-hud"></div>
     </div>
     <div id="mac-stack">
@@ -30,12 +89,29 @@
         <span id="person-card-title">Person</span>
       </div>
       <div class="mac-body">
+        <img id="person-card-photo" alt="" hidden />
         <div id="person-card-name"></div>
+        <div id="person-card-company" hidden></div>
+        <a id="person-card-link" hidden target="_blank" rel="noopener noreferrer"></a>
         <div id="person-card-meta" hidden></div>
         <p id="person-card-note" class="mac-hint" hidden></p>
         <div id="person-card-actions" class="person-card-actions">
           <button type="button" id="person-card-profile">View profile</button>
           <button type="button" id="person-card-whisper">Whisper</button>
+        </div>
+      </div>
+    </div>
+    <div id="ad-visit" hidden>
+      <div class="mac-title">
+        <button type="button" class="mac-close" id="ad-visit-close" aria-label="Close"></button>
+        <span>Window ad</span>
+      </div>
+      <div class="mac-body">
+        <div id="ad-visit-name"></div>
+        <div id="ad-visit-company" hidden></div>
+        <p id="ad-visit-hint" class="mac-hint">Visit their profile link?</p>
+        <div class="person-card-actions">
+          <button type="button" id="ad-visit-go">Visit link</button>
         </div>
       </div>
     </div>
@@ -70,16 +146,38 @@
             <span class="mac-icon">⚙</span>
             Settings
           </button>
+          <button type="button" data-mac="help">
+            <span class="mac-icon">?</span>
+            Help
+          </button>
         </div>
         <div class="mac-panel" id="mac-profile" hidden>
+          <div class="mac-look" id="mac-look">
+            <div class="mac-look-top">
+              <div class="mac-gender" role="group" aria-label="Gender">
+                <button type="button" data-gender="f">Female</button>
+                <button type="button" data-gender="m">Male</button>
+              </div>
+              <button type="button" id="mac-look-random">Randomize</button>
+            </div>
+            <div id="mac-look-rows"></div>
+          </div>
           <div class="mac-field">
             <label for="mac-name">Your name</label>
-            <span class="mac-field-row">
-              <input id="mac-name" spellcheck="false" maxlength="24" />
-              <button type="button" id="mac-name-save">Save</button>
-            </span>
+            <input id="mac-name" spellcheck="false" maxlength="24" />
           </div>
-          <p class="mac-hint" id="mac-name-hint">This shows on your door plate.</p>
+          <div class="mac-field">
+            <label for="mac-company">Company</label>
+            <input id="mac-company" spellcheck="false" maxlength="32" placeholder="Optional" />
+          </div>
+          <div class="mac-field">
+            <label for="mac-profile-url">Profile link</label>
+            <input id="mac-profile-url" type="url" maxlength="200" placeholder="https://" spellcheck="false" />
+          </div>
+          <span class="mac-field-row">
+            <button type="button" id="mac-name-save">Save</button>
+          </span>
+          <p class="mac-hint" id="mac-name-hint">Name on your door. Company sits next to it on Floor. Profile link is on your card.</p>
           <div id="mac-account-in" hidden>
             <p class="mac-hint">Signed in as <b id="mac-account-email"></b></p>
             <div id="mac-office-ad">
@@ -98,7 +196,7 @@
             <button type="button" id="mac-logout">Sign out</button>
           </div>
           <div id="mac-account-out">
-            <p class="mac-hint">You're on the clock as a guest. Sign in to take an office and earn XP.</p>
+            <p class="mac-hint">You're on the clock as a guest for five minutes. Sign in to keep going and take an office.</p>
             <label class="mac-field">Email
               <input id="mac-email" type="email" autocomplete="username" spellcheck="false" />
             </label>
@@ -118,7 +216,7 @@
         </div>
         <div class="mac-panel" id="mac-floor" hidden>
           <div id="mac-floor-list" class="mac-well mac-floor-list"></div>
-          <p class="mac-hint" id="mac-floor-hint">People checked into an office. Block hides their floor chat, knocks, and keeps them out of your office.</p>
+          <p class="mac-hint" id="mac-floor-hint">People checked into an office. Go to walks you there. Whisper if they're available. Block hides their floor chat, knocks, and keeps them out of your office.</p>
         </div>
         <div class="mac-panel" id="mac-privacy">
           <div class="mac-well">
@@ -143,7 +241,12 @@
         </div>
         <div class="mac-panel" id="mac-chat" hidden>
           <div class="mac-chat-main">
-            <div id="mac-whisper-people" class="mac-whisper-people"></div>
+            <div class="mac-chat-nav">
+              <div id="mac-whisper-people" class="mac-whisper-people"></div>
+              <label class="mac-check" id="mac-chat-available-wrap" title="Others can send a whisper request while this is on. Busy and Focus still ignore new ones.">
+                <input type="checkbox" id="mac-chat-available" /> Available for whispers
+              </label>
+            </div>
             <div class="mac-chat-stage">
               <div id="mac-chat-log-floor" class="mac-well mac-chat-log"></div>
               <div id="mac-chat-log-office" class="mac-well mac-chat-log" hidden></div>
@@ -160,16 +263,33 @@
           </div>
         </div>
         <div class="mac-panel" id="mac-settings" hidden>
-          <label class="mac-check" id="mac-chat-available-wrap">
-            <input type="checkbox" id="mac-chat-available" /> Available for whispers
-          </label>
-          <p class="mac-hint">Others can send you a whisper request while this is on. Busy and Focus still ignore new whispers.</p>
           <label class="mac-check">
             <input type="checkbox" id="mac-share-tz" /> Use my timezone
           </label>
           <p class="mac-hint" id="mac-tz-readout">Pacific Time · America/Los Angeles</p>
           <p class="mac-hint">When on, this zone is on your office door for everyone.</p>
-          <button type="button" id="mac-debug-knock">Debug: bot knock</button>
+          <label class="mac-check">
+            <input type="checkbox" id="mac-sound-floor" checked /> Floor sounds
+          </label>
+          <label class="mac-check">
+            <input type="checkbox" id="mac-sound-office" checked /> Office chat sounds
+          </label>
+          <label class="mac-check">
+            <input type="checkbox" id="mac-sound-whisper" checked /> Whispers
+          </label>
+          <p class="mac-hint">A tone when someone else sends a message. Office chat includes a conference room.</p>
+        </div>
+        <div class="mac-panel" id="mac-help" hidden>
+          <div class="mac-well mac-help">
+            <p><b>Walk.</b> Click the floor to move. WASD or the pad moves the camera. Q and E turn it.</p>
+            <p><b>Office.</b> Sign in to claim one. Your name goes on the door. Open lets people drop by, Busy shuts the door, Focus darkens the glass. Knock when the door is shut. A window ad can show while you are on shift.</p>
+            <p><b>Elevator.</b> Ride to another floor, leave your office, or end the shift. Ending the shift takes you outside and stops the clock.</p>
+            <p><b>People.</b> Click someone to see their card. Block hides their chat and knocks, and keeps them out of your office.</p>
+            <p><b>Talk.</b> Floor chat is open. For a private thread, turn on Available for whispers in Chat, then click a person. A whisper ends when either of you clocks out. Busy and Focus ignore new whispers.</p>
+            <p><b>Sit.</b> The kitchen and the rec room are for sitting. The library is silent, so floor chat waits until you step out.</p>
+            <p><b>Conference.</b> Book 30 or 60 minutes. An open session lets anyone walk in. A code session needs the door code.</p>
+            <p id="mac-help-xp"><b>XP.</b></p>
+          </div>
         </div>
       </div>
     </div>
@@ -203,8 +323,9 @@
           <div class="mac-well" id="join-copy">
             <p>A shared office you actually sit in — body doubling, not a blank Zoom grid.</p>
             <p>Chat like AIM: floor chatter, private whispers, and a buddy list on the workstation.</p>
-            <p>You're on the clock the moment you continue, even if you never take a desk.</p>
-            <p>Claim an office to earn XP, put your name on the door, and sit down to work.</p>
+            <p>You're on the clock the moment you continue, even if you never take a desk. Every 30 minutes earns 30 XP.</p>
+            <p>A guest visit lasts five minutes. Sign in to keep the shift going.</p>
+            <p>Claim an office to put your name on the door and sit down to work.</p>
             <p>Clock out at the elevator when you're done.</p>
           </div>
           <div id="join-actions">
@@ -245,7 +366,7 @@
             <div class="day-end-row"><span>Desk</span><b id="claim-shift-desk"></b></div>
             <div class="mac-hint" id="claim-shift-copy">
               <p>You're already on the clock.</p>
-              <p>Claiming this office earns XP, puts your name on the door, and sits you at the desk.</p>
+              <p>Claiming puts your name on the door and sits you at the desk. XP comes from time, not from the desk.</p>
               <p>Visitors can drop by while you are Open. Set Busy or Focus from your workstation.</p>
             </div>
           </div>
@@ -255,6 +376,25 @@
       </div>
     </div>
     
+    <div id="conf-ask" hidden>
+      <div id="conf-ask-card">
+        <div class="mac-title">
+          <button type="button" class="mac-close" id="conf-ask-close" aria-label="Close"></button>
+          <span id="conf-ask-title">Conference</span>
+        </div>
+        <div class="mac-body">
+          <p id="conf-ask-hello">Reserve this room?</p>
+          <div class="mac-well">
+            <div class="mac-hint" id="conf-ask-copy">
+              Book 30 or 60 minutes. Open to the floor, or lock it with a door code.
+            </div>
+          </div>
+          <button type="button" id="conf-ask-walk">Walk in</button>
+          <button type="button" id="conf-ask-go">Reserve</button>
+          <button type="button" id="conf-ask-no">Not now</button>
+        </div>
+      </div>
+    </div>
     <div id="conf-reserve" hidden>
       <div id="conf-reserve-card">
         <div class="mac-title">
@@ -263,22 +403,95 @@
         </div>
         <div class="mac-body">
           <p id="conf-reserve-hello">Conference room</p>
-          <label class="mac-field" id="conf-reserve-day-label">Day
-            <input id="conf-reserve-day" type="date" />
-          </label>
           <p class="mac-hint" id="conf-reserve-allow">60 min max per person per Pacific day</p>
-          <div class="conf-dur">
-            <button type="button" data-dur="30" class="on">30 min</button>
-            <button type="button" data-dur="60">60 min</button>
+          <div class="conf-acc open" id="conf-acc-slots">
+            <button type="button" class="conf-acc-head" id="conf-acc-slots-head">Book a slot</button>
+            <div class="conf-acc-body">
+              <label class="mac-field" id="conf-reserve-day-label">Day
+                <input id="conf-reserve-day" type="date" />
+              </label>
+              <div class="conf-dur">
+                <button type="button" data-dur="30" class="on">30 min</button>
+                <button type="button" data-dur="60">60 min</button>
+              </div>
+              <div class="conf-dur" id="conf-reserve-access">
+                <button type="button" data-access="open" class="on">Open session</button>
+                <button type="button" data-access="code">Code session</button>
+              </div>
+              <p class="mac-hint" id="conf-reserve-access-hint">Anyone on the floor can walk in during your slot.</p>
+              <div id="conf-reserve-slots" class="conf-slots"></div>
+              <p id="conf-reserve-error" class="mac-hint"></p>
+              <button type="button" id="conf-reserve-go">Book</button>
+            </div>
           </div>
-          <div id="conf-reserve-slots" class="conf-slots"></div>
-          <p id="conf-reserve-error" class="mac-hint"></p>
-          <div class="mac-well">
-            <b>Your bookings</b>
-            <div id="conf-reserve-mine"></div>
+          <div class="conf-acc" id="conf-acc-room">
+            <button type="button" class="conf-acc-head" id="conf-acc-room-head">This room</button>
+            <div class="conf-acc-body">
+              <div class="mac-well" id="conf-reserve-people-well">
+                <b>In the room</b>
+                <div id="conf-reserve-people"></div>
+              </div>
+              <div class="mac-well">
+                <b>Your bookings</b>
+                <div id="conf-reserve-mine"></div>
+              </div>
+            </div>
           </div>
-          <button type="button" id="conf-reserve-go">Book</button>
           <button type="button" id="conf-reserve-no">Close</button>
+        </div>
+      </div>
+    </div>
+    <div id="conf-join" hidden>
+      <div id="conf-join-card">
+        <div class="mac-title">
+          <button type="button" class="mac-close" id="conf-join-close" aria-label="Close"></button>
+          <span>Conference code</span>
+        </div>
+        <div class="mac-body">
+          <p id="conf-join-hello">This meeting is code-only.</p>
+          <label class="mac-field">Door code
+            <input id="conf-join-code" maxlength="8" autocomplete="off" spellcheck="false" />
+          </label>
+          <p id="conf-join-error" class="mac-hint"></p>
+          <button type="button" id="conf-join-go">Walk in</button>
+          <button type="button" id="conf-join-reserve">Reserve another time</button>
+          <button type="button" id="conf-join-no">Stay in the hall</button>
+        </div>
+      </div>
+    </div>
+    <div id="guest-over" hidden>
+      <div id="guest-over-card">
+        <div class="mac-title"><span>Guest visit</span></div>
+        <div class="mac-body">
+          <p id="guest-over-hello">Five minutes is up.</p>
+          <div class="mac-well">
+            <div class="mac-hint" id="guest-over-copy">
+              <p>You're here as a guest, so the clock is stopped.</p>
+              <p>Sign in to keep going. Leave if you're done for now.</p>
+            </div>
+          </div>
+          <div id="guest-over-actions">
+            <button type="button" id="guest-over-signin">Sign in to continue</button>
+            <button type="button" id="guest-over-leave">Leave</button>
+          </div>
+          <div id="guest-over-auth" hidden>
+            <label class="mac-field">Email
+              <input id="guest-over-email" type="email" autocomplete="username" spellcheck="false" />
+            </label>
+            <button type="button" id="guest-over-email-send">Email me a code</button>
+            <div id="guest-over-code-wrap" hidden>
+              <label class="mac-field">Code
+                <input id="guest-over-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" />
+              </label>
+              <button type="button" id="guest-over-verify">Sign in</button>
+            </div>
+            <p id="guest-over-hint" class="mac-hint"></p>
+            <div id="guest-over-google-wrap" hidden>
+              <p class="mac-or">or</p>
+              <div id="guest-over-google"></div>
+            </div>
+            <button type="button" id="guest-over-back">Back</button>
+          </div>
         </div>
       </div>
     </div>
@@ -294,6 +507,8 @@
             <div class="day-end-row"><span>Desk</span><b id="day-end-desk"></b></div>
             <div class="day-end-row"><span>Checked in</span><b id="day-end-in"></b></div>
             <div class="day-end-row"><span>Time at work</span><b id="day-end-time"></b></div>
+            <div class="day-end-row"><span>This session</span><b id="day-end-shift-xp">0 XP</b></div>
+            <div class="day-end-row"><span>Total XP</span><b id="day-end-total-xp">0 XP</b></div>
           </div>
           <p class="mac-hint" id="day-end-copy">
             Leave office frees your desk and you stay on the floor. End shift clocks you out and takes you outside — come back later without closing the tab.
@@ -308,10 +523,12 @@
     </div>
     <div id="enter-overlay">Entering…</div>
     <div id="cam-pad">
+      <button type="button" data-orbit="l" class="cam-orbit-l" aria-label="Orbit left" title="Orbit left (Q)">↶</button>
       <button type="button" data-cam="w" class="cam-n">▲</button>
       <button type="button" data-cam="a" class="cam-w">◀</button>
       <button type="button" data-cam="s" class="cam-s">▼</button>
       <button type="button" data-cam="d" class="cam-e">▶</button>
+      <button type="button" data-orbit="r" class="cam-orbit-r" aria-label="Orbit right" title="Orbit right (E)">↷</button>
     </div>
     <canvas id="c"></canvas>
     <script type="module" src="/src/main.ts"></script>

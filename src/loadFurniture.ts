@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import {
+  ENV_SCALE,
   FURNITURE_SCALE,
   FURNITURE_TINT,
   FURNITURE_Y_OFFSET,
@@ -49,7 +50,7 @@ export function applyItemTransform(
   plate: FloorPlate,
 ) {
   const [wx, , wz] = toWorld(item.x, item.y, plate);
-  const y = (FURNITURE_Y_OFFSET[item.type] ?? 0) + (item.elevation ?? 0);
+  const y = ((FURNITURE_Y_OFFSET[item.type] ?? 0) + (item.elevation ?? 0)) * ENV_SCALE;
   group.position.set(wx, y, wz);
   group.rotation.set(0, 0, 0);
   group.scale.set(1, 1, 1);
@@ -172,7 +173,7 @@ function placeItem(item: FurnitureItem, plate: FloorPlate, mesh: THREE.Group) {
   group.userData.editable = true;
   const inner = new THREE.Group();
   inner.name = "pivot";
-  mesh.scale.set(scale[0], scale[1], scale[2]);
+  mesh.scale.set(scale[0] * ENV_SCALE, scale[1] * ENV_SCALE, scale[2] * ENV_SCALE);
   inner.add(mesh);
   if (CENTER_PIVOT.has(item.type)) {
     inner.updateMatrixWorld(true);

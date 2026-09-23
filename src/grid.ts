@@ -174,7 +174,7 @@ function collectMergedRooms(
       mark(col, row, w, h);
       const hit = hitFor(col, row, w, h);
       rooms.push({
-        id: `${prefix}_${col}_${row}_${w}x${h}`,
+        id: hit?.id ?? `${prefix}_${col}_${row}_${w}x${h}`,
         col,
         row,
         cols: w,
@@ -534,12 +534,14 @@ export function elevatorSpawn(plate: FloorPlate) {
   const cell = plate.zones.elevator?.cells?.[0];
   if (!cell) return sidewalkSpawn(plate);
   const size = plate.grid.cellSize;
+  // Shafts occupy the north edge. The cell center sits in the crack between
+  // the cars, which is narrower than the player, so the pathfinder can't leave.
   return {
     id: "elevator",
     col: cell.col,
     row: cell.row,
-    x: cell.col * size + size / 2,
-    y: cell.row * size + size / 2,
+    x: cell.col * size + size * 0.5,
+    y: cell.row * size + size * 0.78,
   };
 }
 
@@ -553,6 +555,7 @@ export function spreadConferenceFurniture(plate: FloorPlate) {
   const rows = source.rows ?? 1;
   for (const room of rooms) {
     if (room.id === source.id) continue;
+    if (room.furniture) continue;
     if ((room.cols ?? 1) !== cols || (room.rows ?? 1) !== rows) continue;
     room.furniture = source.furniture.map((item, i) => ({
       ...item,
@@ -565,7 +568,7 @@ export function ensureGridDefaults(plate: FloorPlate) {
   plate.legend = { ...CHAR_KIND, ...plate.legend };
   ensureAssetTypes(plate);
   ensureOutsideStrip(plate);
-  plate.conferenceTemplate = defaultConferenceTemplate(plate.grid.cellSize);
+  plate.conferenceTemplate ??= defaultConferenceTemplate(plate.grid.cellSize);
   plate.recreationTemplate ??= defaultRecreationTemplate(plate.grid.cellSize);
   plate.libraryTemplate ??= defaultLibraryTemplate(plate.grid.cellSize);
   plate.conferences ??= [];

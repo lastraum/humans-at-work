@@ -1,9 +1,9 @@
 import * as THREE from "three";
-import { fromWorld, SCALE } from "./coords";
+import { ENV_SCALE, fromWorld, SCALE, toWorld } from "./coords";
 import { localPlateFor } from "./createOffice";
 import { setHingedDoorOpen } from "./createPlate";
 import { applyItemTransform } from "./loadFurniture";
-import { applyOfficeAd } from "./officeAds";
+import { applyOfficeAd, setOfficeAdVisible } from "./officeAds";
 import { clampPrivacy, type Claim, type DeskKind, type Privacy } from "./protocol";
 import type { FloorPlate, FurnitureItem, OfficeInstance } from "./types";
 
@@ -13,7 +13,12 @@ export type Desk = {
   instance: OfficeInstance;
   group: THREE.Object3D;
   seat: { x: number; y: number; facing: number };
+  lampLight?: THREE.PointLight;
 };
+
+/** Shared near-office budget for lamps and window-ad planes. */
+export const MAX_NEAR_OFFICES = 6;
+export const MAX_OFFICE_POINT_LIGHTS = MAX_NEAR_OFFICES;
 
 type OccupantPose = { id?: string; col?: number; row?: number; x: number; y: number };
 
@@ -43,6 +48,14 @@ function chairNode(group: THREE.Object3D): THREE.Object3D | null {
   return preferred ?? best;
 }
 
+export type Seat = {
+  x: number;
+  y: number;
+  facing: number;
+  seatId?: string;
+  seatY?: number;
+};
+
 function isSittable(type: string) {
   if (type === "beanbag" || type === "couch") return true;
   if (type.includes("sofa") || type.includes("chair")) return true;
@@ -53,11 +66,79 @@ function isCouchLike(type: string) {
   return type === "couch" || type.includes("sofa");
 }
 
-/** Lounge sofas/couches store sit direction in `item.facing`. Kenney desk chairs face the opposite way. */
+const _bagCenter = new THREE.Vector3();
+const _bagTarget = new THREE.Vector3();
+const _bagBox = new THREE.Box3();
+
+function clusterRoot(node: THREE.Object3D) {
+  let current: THREE.Object3D | null = node;
+  while (current) {
+    if (
+      current.userData?.recreation ||
+      current.userData?.office ||
+      current.userData?.library ||
+      current.userData?.conference
+    ) {
+      return current;
+    }
+    current = current.parent;
+  }
+  return node.parent ?? node;
+}
+
+/** Sit facing is the look direction plus 180, because sitting turns the body halfway around. */
+function faceBeanbagInward(node: THREE.Object3D, seat: Seat, plate: FloorPlate) {
+  const root = clusterRoot(node);
+  const tables: THREE.Object3D[] = [];
+  const bags: THREE.Object3D[] = [];
+  root.traverse((child) => {
+    const type = (child.userData?.item as { type?: string } | undefined)?.type;
+    if (!type) return;
+    if (type === "beanbag") bags.push(child);
+    else if (type.includes("table")) tables.push(child);
+  });
+  const [sx, , sz] = toWorld(seat.x, seat.y, plate);
+  let found = false;
+  if (bags.length >= 3) {
+    _bagTarget.set(0, 0, 0);
+    for (const bag of bags) {
+      _bagBox.setFromObject(bag);
+      if (_bagBox.isEmpty()) bag.getWorldPosition(_bagCenter);
+      else _bagBox.getCenter(_bagCenter);
+      _bagTarget.add(_bagCenter);
+    }
+    _bagTarget.multiplyScalar(1 / bags.length);
+    found = true;
+  }
+  if (!found) {
+    let best = 4;
+    for (const table of tables) {
+      _bagBox.setFromObject(table);
+      if (_bagBox.isEmpty()) continue;
+      _bagBox.getCenter(_bagCenter);
+      const dist = Math.hypot(_bagCenter.x - sx, _bagCenter.z - sz);
+      if (dist < best) {
+        best = dist;
+        _bagTarget.copy(_bagCenter);
+        found = true;
+      }
+    }
+  }
+  if (!found) return;
+  const look = (Math.atan2(_bagTarget.x - sx, _bagTarget.z - sz) * 180) / Math.PI;
+  seat.facing = (((look + 180) % 360) + 360) % 360;
+}
+
+/** Desk chairs face the opposite way of the Kenney mesh. Bags and lounges use item.facing. */
 function sitFacingOf(itemFacing: number, roomRot: number, type: string) {
   const furnFacing = (((itemFacing ?? 0) + roomRot) % 360 + 360) % 360;
-  if (isCouchLike(type) || type.startsWith("lounge")) return furnFacing;
+  if (isCouchLike(type) || type.startsWith("lounge") || type === "beanbag") return furnFacing;
   return (furnFacing + 180) % 360;
+}
+
+export function sitHeightFor(type: string) {
+  const base = type === "beanbag" ? 0.36 : isCouchLike(type) || type.startsWith("lounge") ? 0.26 : 0.228;
+  return base * ENV_SCALE;
 }
 
 function itemNodeFrom(obj: THREE.Object3D | null): THREE.Object3D | null {
@@ -86,14 +167,15 @@ export function furnitureSeat(
   click?: THREE.Vector3,
   roomRot = 0,
   facingDeg?: number,
-) {
+): Seat {
   node.updateWorldMatrix(true, true);
   const box = new THREE.Box3().setFromObject(node);
   const center = box.getCenter(new THREE.Vector3());
-  const item = node.userData.item as { facing?: number; type?: string };
-  const facing = sitFacingOf(facingDeg ?? item.facing ?? 0, roomRot, item.type ?? "");
+  const item = node.userData.item as { facing?: number; type?: string; _uid?: string };
+  const type = item.type ?? "";
+  const facing = sitFacingOf(facingDeg ?? item.facing ?? 0, roomRot, type);
   const rad = (facing * Math.PI) / 180;
-  if (click && isCouchLike(item.type ?? "")) {
+  if (click && isCouchLike(type)) {
     const alongX = Math.sin(rad + Math.PI / 2);
     const alongZ = Math.cos(rad + Math.PI / 2);
     const size = box.getSize(new THREE.Vector3());
@@ -106,12 +188,19 @@ export function furnitureSeat(
     center.x += alongX * t;
     center.z += alongZ * t;
   }
+  const forward = (type === "beanbag" ? 0.32 : 0.12) * ENV_SCALE;
   const canvas = fromWorld(
-    center.x + Math.sin(rad) * 0.12,
-    center.z + Math.cos(rad) * 0.12,
+    center.x + Math.sin(rad) * forward,
+    center.z + Math.cos(rad) * forward,
     plate,
   );
-  return { x: canvas.x, y: canvas.y, facing };
+  return {
+    x: canvas.x,
+    y: canvas.y,
+    facing,
+    seatId: item._uid || undefined,
+    seatY: sitHeightFor(type),
+  };
 }
 
 export function chairSeat(
@@ -119,17 +208,20 @@ export function chairSeat(
   inst: OfficeInstance,
   plate: FloorPlate,
   occupied = false,
-) {
+): Seat {
   const chair = chairNode(group);
   const item = chair?.userData.item as FurnitureItem | undefined;
-  const facing =
-    occupied && item?.occupied?.facing != null ? item.occupied.facing : item?.facing;
-  if (chair) return furnitureSeat(chair, plate, undefined, inst.rot ?? 0, facing);
+  // Chair mesh turns to occupied.facing. The sitter keeps the vacant facing,
+  // same as the fixture bots, so the sit half-turn still faces the desk.
+  void occupied;
+  if (chair) return furnitureSeat(chair, plate, undefined, inst.rot ?? 0, item?.facing);
   const cell = plate.grid.cellSize;
   return {
     x: inst.col * cell + ((inst.cols ?? 1) * cell) / 2,
     y: inst.row * cell + ((inst.rows ?? 1) * cell) / 2,
     facing: inst.rot ?? 0,
+    seatId: inst.id,
+    seatY: sitHeightFor("chair"),
   };
 }
 
@@ -141,6 +233,58 @@ function zoneCity(tz?: string) {
   if (!tz) return "";
   const city = tz.split("/").pop()?.replace(/_/g, " ") ?? "";
   return city;
+}
+
+function drawConfPlate(
+  canvas: HTMLCanvasElement,
+  title: string,
+  sub?: string,
+  tone: "idle" | "open" | "busy" = "idle",
+) {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  const inner = tone === "busy" ? "#3a1212" : tone === "open" ? "#14301f" : "#2a1c10";
+  const frame = tone === "busy" ? "#c07060" : tone === "open" ? "#7cba8a" : "#d4b06a";
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#3a2a18";
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = frame;
+  ctx.fillRect(8, 8, w - 16, h - 16);
+  ctx.fillStyle = inner;
+  ctx.fillRect(14, 14, w - 28, h - 28);
+  ctx.fillStyle = "#f3e6c8";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  if (sub) {
+    ctx.font = "700 42px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText(title.slice(0, 16).toUpperCase(), w / 2, h * 0.38);
+    ctx.font = "700 34px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText(sub.slice(0, 22), w / 2, h * 0.7);
+  } else {
+    ctx.font = "700 52px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText(title.slice(0, 16).toUpperCase(), w / 2, h / 2 + 2);
+  }
+}
+
+export function applyConferencePlate(
+  group: THREE.Object3D,
+  copy: { title: string; sub?: string; tone?: "idle" | "open" | "busy" },
+) {
+  const door = officeDoor(group);
+  if (!door) return;
+  door.updateWorldMatrix(true, true);
+  const plate = ensureDoorPlate(door, Boolean(copy.sub));
+  drawConfPlate(
+    plate.userData.canvas as HTMLCanvasElement,
+    copy.title,
+    copy.sub,
+    copy.tone ?? "idle",
+  );
+  (plate.userData.texture as THREE.CanvasTexture).needsUpdate = true;
+  plate.visible = true;
+  plate.userData.conferencePlate = true;
 }
 
 function drawDoorPlate(canvas: HTMLCanvasElement, name: string, zone?: string) {
@@ -205,7 +349,7 @@ function ensureVacantShade(desk: Desk, dark: boolean, cellSize: number) {
     );
     shade.name = "vacant-shade";
     shade.rotation.x = -Math.PI / 2;
-    shade.position.y = 0.98;
+    shade.position.y = 0.98 * ENV_SCALE;
     shade.renderOrder = 3;
     desk.group.add(shade);
   }
@@ -308,7 +452,7 @@ function lampNode(group: THREE.Object3D) {
 function ensureLampLight(lamp: THREE.Object3D) {
   let light = lamp.getObjectByName("lamp-light") as THREE.PointLight | undefined;
   if (light) return light;
-  light = new THREE.PointLight(0xffc27a, 0, 6.5, 2);
+  light = new THREE.PointLight(0xffc27a, 0, 6.5 * ENV_SCALE, 2);
   light.name = "lamp-light";
   light.castShadow = false;
   lamp.add(light);
@@ -334,8 +478,8 @@ function officeDoor(group: THREE.Object3D): THREE.Object3D | null {
 }
 
 function ensureDoorPlate(door: THREE.Object3D, withZone = false) {
-  const planeW = 0.78;
-  const planeH = withZone ? 0.24 : 0.18;
+  const planeW = 0.78 * ENV_SCALE;
+  const planeH = (withZone ? 0.24 : 0.18) * ENV_SCALE;
   const canvasH = withZone ? 180 : 110;
   const leftovers: THREE.Object3D[] = [];
   door.traverse((node) => {
@@ -374,8 +518,8 @@ function ensureDoorPlate(door: THREE.Object3D, withZone = false) {
   frame.add(plate);
   const edge = String(door.userData.doorEdge ?? "n");
   const alongX = Boolean(door.userData.alongX ?? (edge === "n" || edge === "s"));
-  const out = 0.13;
-  plate.position.set(0, 1.09, 0);
+  const out = 0.13 * ENV_SCALE;
+  plate.position.set(0, 1.09 * ENV_SCALE, 0);
   plate.rotation.set(0, 0, 0);
   if (alongX) {
     plate.position.z = edge === "n" ? -out : out;
@@ -401,9 +545,10 @@ export function attachDesks(opts: {
   cubiclesRoot: THREE.Group;
   recreationsRoot?: THREE.Group;
   librariesRoot?: THREE.Group;
+  conferencesRoot?: THREE.Group;
   looseRoot?: THREE.Group;
 }) {
-  const { plate, officesRoot, cubiclesRoot, recreationsRoot, librariesRoot, looseRoot } = opts;
+  const { plate, officesRoot, cubiclesRoot, recreationsRoot, librariesRoot, conferencesRoot, looseRoot } = opts;
   const desks = new Map<string, Desk>();
   const claims = new Map<string, Claim>();
   const fixtures = new Map<string, string>();
@@ -471,8 +616,10 @@ export function attachDesks(opts: {
     const lamp = lampNode(desk.group);
     if (lamp) {
       const light = ensureLampLight(lamp);
-      light.visible = occupied;
+      desk.lampLight = light;
+      light.userData.wanted = occupied;
       light.intensity = !occupied ? 0 : privacy === "focus" ? 0.9 : 1.7;
+      light.visible = false;
     }
     const computer = computerNode(desk.group);
     if (computer) {
@@ -526,49 +673,73 @@ export function attachDesks(opts: {
     couchSeat(desk: Desk) {
       const couch = couchNode(desk.group);
       if (!couch) return null;
-      return furnitureSeat(couch, plate, undefined, desk.instance.rot ?? 0);
+      const seat = furnitureSeat(couch, plate, undefined, desk.instance.rot ?? 0);
+      if (desk.kind === "office") seat.facing = (seat.facing + 180) % 360;
+      return seat;
     },
-    pickSeat(camera: THREE.Camera, pointer: THREE.Vector2) {
+    pickSeat(
+      camera: THREE.Camera,
+      pointer: THREE.Vector2,
+      taken?: (seatId?: string) => boolean,
+    ) {
       seatRay.setFromCamera(pointer, camera);
       const targets: THREE.Object3D[] = [...desks.values()].map((desk) => desk.group);
       if (recreationsRoot) targets.push(...recreationsRoot.children);
       if (librariesRoot) targets.push(...librariesRoot.children);
+      if (conferencesRoot) targets.push(...conferencesRoot.children);
       if (looseRoot) targets.push(...looseRoot.children);
       const hits = seatRay.intersectObjects(targets, true);
-      const hit = hits[0];
-      if (!hit) return null;
-      const node = itemNodeFrom(hit.object);
-      const type = node?.userData?.item?.type as string | undefined;
-      if (!node || !type || !isSittable(type)) return null;
-      let parent: THREE.Object3D | null = node;
-      let desk: Desk | null = null;
-      let roomRot = 0;
-      while (parent) {
-        const inst =
-          (parent.userData?.office as OfficeInstance | undefined) ??
-          (parent.userData?.cubicle as OfficeInstance | undefined);
-        const rec = parent.userData?.recreation as OfficeInstance | undefined;
-        const lib = parent.userData?.library as OfficeInstance | undefined;
-        if (inst) {
-          desk = desks.get(inst.id) ?? null;
-          roomRot = inst.rot ?? 0;
-          break;
+      let blocked:
+        | { desk: Desk | null; type: string; seat: Seat; occupied: true }
+        | null = null;
+      for (const hit of hits) {
+        const node = itemNodeFrom(hit.object);
+        const type = node?.userData?.item?.type as string | undefined;
+        if (!node || !type || !isSittable(type)) continue;
+        let parent: THREE.Object3D | null = node;
+        let desk: Desk | null = null;
+        let roomRot = 0;
+        while (parent) {
+          const inst =
+            (parent.userData?.office as OfficeInstance | undefined) ??
+            (parent.userData?.cubicle as OfficeInstance | undefined);
+          const rec = parent.userData?.recreation as OfficeInstance | undefined;
+          const lib = parent.userData?.library as OfficeInstance | undefined;
+          const conf = parent.userData?.conference as OfficeInstance | undefined;
+          if (inst) {
+            desk = desks.get(inst.id) ?? null;
+            roomRot = inst.rot ?? 0;
+            break;
+          }
+          if (rec) {
+            roomRot = rec.rot ?? 0;
+            break;
+          }
+          if (lib) {
+            roomRot = lib.rot ?? 0;
+            break;
+          }
+          if (conf) {
+            roomRot = conf.rot ?? 0;
+            break;
+          }
+          parent = parent.parent;
         }
-        if (rec) {
-          roomRot = rec.rot ?? 0;
-          break;
+        const seat = furnitureSeat(node, plate, hit.point, roomRot);
+        // Lounges store the mesh facing. The sit pose adds a half-turn so the
+        // face points the other way; turn these seats back so rec couches and
+        // lounge chairs face out of the seat. Bean bags look at the table.
+        if (type === "beanbag") faceBeanbagInward(node, seat, plate);
+        else if (isCouchLike(type) || type.startsWith("lounge")) {
+          seat.facing = (seat.facing + 180) % 360;
         }
-        if (lib) {
-          roomRot = lib.rot ?? 0;
-          break;
+        if (taken?.(seat.seatId)) {
+          if (!blocked) blocked = { desk, type, seat, occupied: true };
+          continue;
         }
-        parent = parent.parent;
+        return { desk, type, seat, occupied: false as const };
       }
-      return {
-        desk,
-        type,
-        seat: furnitureSeat(node, plate, hit.point, roomRot),
-      };
+      return blocked;
     },
     claimOf: claimAt,
     mine: (peerId: string) => [...claims.values()].find((entry) => entry.peerId === peerId),
@@ -581,9 +752,12 @@ export function attachDesks(opts: {
           return {
             peerId: claim.peerId,
             name: claim.name,
+            deskId: claim.deskId,
             desk: label,
             privacy: claim.privacy,
             since: claim.since,
+            company: claim.company,
+            profileUrl: claim.profileUrl,
           };
         })
         .sort((a, b) => a.name.localeCompare(b.name)),
@@ -651,6 +825,45 @@ export function attachDesks(opts: {
         const pose = byId.get(claim.peerId);
         setAway(deskId, !pose || !inDesk(pose, desk.instance, cell));
       }
+    },
+    cullLamps(origin: THREE.Vector3) {
+      const ranked: { desk: Desk; dist: number; lamp: boolean; ad: boolean }[] = [];
+      for (const desk of desks.values()) {
+        const lamp = Boolean(desk.lampLight?.userData.wanted);
+        const ad = Boolean(desk.group.userData.officeAdUrl);
+        if (!lamp && !ad) {
+          if (desk.lampLight) desk.lampLight.visible = false;
+          setOfficeAdVisible(desk.group, false);
+          continue;
+        }
+        ranked.push({
+          desk,
+          dist: origin.distanceToSquared(desk.group.position),
+          lamp,
+          ad,
+        });
+      }
+      ranked.sort((a, b) => a.dist - b.dist);
+      let lampsOn = 0;
+      let adsOn = 0;
+      let lampsWanted = 0;
+      let adsWanted = 0;
+      for (const [i, row] of ranked.entries()) {
+        const show = i < MAX_NEAR_OFFICES;
+        if (row.lamp) lampsWanted += 1;
+        if (row.ad) adsWanted += 1;
+        if (row.desk.lampLight) {
+          row.desk.lampLight.visible = show && row.lamp;
+          if (show && row.lamp) lampsOn += 1;
+        }
+        setOfficeAdVisible(row.desk.group, show && row.ad);
+        if (show && row.ad) adsOn += 1;
+      }
+      return {
+        on: lampsOn,
+        wanted: lampsWanted,
+        ads: { on: adsOn, wanted: adsWanted },
+      };
     },
     label(desk: Desk) {
       const claim = claimAt(desk.id);

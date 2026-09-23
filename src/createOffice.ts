@@ -205,6 +205,7 @@ function stampInstance(
   group.name = instance.id;
   assignRoomUserData(group, kind, instance);
   group.userData.hasExteriorWindows = kind === "office" && officeWindowFacesOutside(plate, instance);
+  group.userData.cellSize = cell;
   const [wx, , wz] = officeWorldCenter(instance, plate);
   group.position.set(wx, 0, wz);
   group.rotation.y = ROOM_ROT_Y[instance.rot] ?? 0;
@@ -395,6 +396,7 @@ export function syncTemplatedCells(
       group.rotation.y = ROOM_ROT_Y[instance.rot] ?? 0;
       assignRoomUserData(group, kind, instance);
       group.userData.hasExteriorWindows = kind === "office" && officeWindowFacesOutside(plate, instance);
+      group.userData.cellSize = plate.officeTemplate?.size ?? plate.cubicleTemplate?.size ?? plate.grid.cellSize;
       continue;
     }
     stampInstance(root, instance, template, furnitureTemplate, plate, kind);
