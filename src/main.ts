@@ -72,6 +72,15 @@ import type { Avatar, FloorPlate, OfficeInstance } from "./types";
 
 document.body.classList.add("ready");
 
+function postLook(body: { id?: string; retire?: string }) {
+  void fetch("/__presence/look", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    keepalive: true,
+  }).catch(() => undefined);
+}
+
 async function loadPlate(): Promise<FloorPlate> {
   const urls = [`/floor-plate.json?t=${Date.now()}`, `/__floor-plate?t=${Date.now()}`];
   for (const url of urls) {
@@ -291,6 +300,100 @@ function centerCameraOn(wx: number, wz: number) {
   camera.position.copy(controls.target).add(camOffset);
 }
 
+/** Place the camera on one side of the target. `w` looks from the hallway into east offices (door side). */
+function lookFrom(dir: "w" | "e" | "s" | "n") {
+  const h = 56;
+  const d = 62;
+  const iso = 34;
+  if (dir === "w") camOffset.set(-d, h, iso);
+  else if (dir === "e") camOffset.set(d, h, iso);
+  else if (dir === "n") camOffset.set(iso, h, -d);
+  else camOffset.set(iso, h, d);
+  camera.position.copy(controls.target).add(camOffset);
+  camera.lookAt(controls.target);
+}
+
+const filmParams = new URLSearchParams(location.search);
+const shotName = (filmParams.get("shot") ?? "").trim().toLowerCase();
+const filmQuery = filmParams.get("film");
+const filmFollowName = (filmParams.get("follow") ?? "").trim();
+const wantFilm = filmParams.has("film") || Boolean(shotName) || Boolean(filmFollowName);
+const filmActor =
+  wantFilm && (location.hostname === "127.0.0.1" || location.hostname === "localhost");
+type FilmMode = "off" | "hide" | "chat" | "hud";
+const filmOrder: FilmMode[] = ["off", "hide", "chat", "hud"];
+let filmMode: FilmMode = "off";
+let filmFollow = filmFollowName;
+
+function isTypingTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable;
+}
+
+function setFilmMode(mode: FilmMode) {
+  filmMode = mode;
+  document.body.classList.toggle("film", mode === "hide" || mode === "chat" || mode === "hud");
+  document.body.classList.toggle("film-chat", mode === "chat");
+  document.body.classList.toggle("film-hud", mode === "hud");
+}
+
+if (wantFilm) setFilmMode(filmQuery === "chat" || shotName === "chat" ? "chat" : "hide");
+
+window.addEventListener("keydown", (event) => {
+  if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (isTypingTarget(event.target)) return;
+  if (event.key !== "h" && event.key !== "H") return;
+  const next = filmOrder[(filmOrder.indexOf(filmMode) + 1) % filmOrder.length] ?? "off";
+  setFilmMode(next);
+  event.preventDefault();
+});
+
+const TEASER_SHOTS: Record<
+  string,
+  { x: number; y: number; zoom: number; film?: FilmMode; look?: "w" | "e" | "s" | "n" }
+> = {
+  elevator: { x: 448, y: 1214, zoom: 8 },
+  kitchen: { x: 455, y: 1495, zoom: 8.6 },
+  hall: { x: 300, y: 1580, zoom: 6.8 },
+  rec: { x: 620, y: 2188, zoom: 8.3 },
+  door: { x: 205, y: 1342, zoom: 9.2 },
+  office: { x: 95, y: 1343, zoom: 10.2 },
+  window: { x: 18, y: 1408, zoom: 8.4 },
+  "lina-inside": { x: 95, y: 1343, zoom: 10.2, film: "chat" },
+  "ash-inside": { x: 1288, y: 1343, zoom: 9.6, look: "w" },
+  "ash-window": { x: 1288, y: 1343, zoom: 8.4, look: "w" },
+  chat: { x: 455, y: 1495, zoom: 8.2, film: "chat" },
+  whisper: { x: 455, y: 1495, zoom: 8.2, film: "chat" },
+  focus: { x: 1288, y: 1343, zoom: 8.8, look: "w" },
+  xp: { x: 360, y: 1520, zoom: 6.3, film: "hud" },
+  clockout: { x: 448, y: 1214, zoom: 8 },
+};
+
+function applyTeaserShot(plate: FloorPlate, name = shotName) {
+  const shot = TEASER_SHOTS[name] ?? (wantFilm && !name ? TEASER_SHOTS.kitchen : null);
+  if (!shot) return;
+  const [wx, , wz] = toWorld(shot.x, shot.y, plate);
+  camera.zoom = shot.zoom;
+  camera.updateProjectionMatrix();
+  centerCameraOn(wx, wz);
+  if (shot.look) lookFrom(shot.look);
+  controls.update();
+}
+
+declare global {
+  interface Window {
+    hawShot?: (name: string) => void;
+    hawFollow?: (name: string | null) => void;
+    hawFilm?: (mode: FilmMode) => void;
+    hawGo?: (x: number, y: number) => void;
+    hawMoving?: () => boolean;
+    hawOpenClaim?: (deskId: string) => void;
+    hawMac?: (panel: string) => void;
+    hawLook?: (dir: "w" | "e" | "s" | "n") => void;
+  }
+}
+
 scene.add(new THREE.AmbientLight(0xfff4e8, 0.62));
 const hemi = new THREE.HemisphereLight(0xe7f3ff, 0x6b8f4a, 0.82);
 scene.add(hemi);
@@ -460,9 +563,24 @@ loadPlate()
     });
     editor.setEnabled(false);
 
-    let session = await restoreAccount();
+    let session = filmActor ? null : await restoreAccount();
     if (!session) clearAccountEmail();
     const identity = session ? applyAccount(session.user) : ensureIdentity();
+    if (filmActor) {
+      identity.id = "bot-teaser-you";
+      identity.name = "Ash";
+      identity.email = undefined;
+      identity.look = {
+        gender: "m",
+        skin: "#c68642",
+        hair: "#2a2118",
+        eyes: "#3d6cb5",
+        shirt: "#80b918",
+        pants: "#2c3340",
+      };
+      identity.color = identity.look.shirt;
+    }
+    postLook({ id: identity.id });
     let guest = session
       ? await ensureSessionWallet(session.token)
       : await ensureGuestWallet(identity.id);
@@ -475,7 +593,7 @@ loadPlate()
     writeBlocked([...blocked]);
     selfId = identity.id;
     selfName = identity.name;
-    selfSignedIn = Boolean(identity.email);
+    selfSignedIn = Boolean(identity.email) || filmActor;
     let officeAdState: OfficeAdProfile = session?.officeAd ?? {
       enabled: false,
       hasImage: false,
@@ -517,6 +635,7 @@ loadPlate()
       profileUrl?: string;
       look?: AvatarLook;
     }) => {
+      const previous = identity.id;
       const look = clampLook(user.look) ?? identity.look;
       identity.id = user.id;
       identity.name = sanitizeName(user.name) || identity.name;
@@ -537,6 +656,7 @@ loadPlate()
       youAvatar.id = identity.id;
       youAvatar.name = identity.name;
       showLook();
+      if (previous !== identity.id) postLook({ retire: previous, id: identity.id });
     };
 
     const remotes = attachRemoteHumans({
@@ -566,6 +686,37 @@ loadPlate()
     };
 
     livePlate = plate;
+    window.hawShot = (name: string) => {
+      filmFollow = "";
+      const shot = TEASER_SHOTS[name];
+      setFilmMode(shot?.film ?? "hide");
+      applyTeaserShot(plate, name);
+    };
+    window.hawFollow = (name) => {
+      filmFollow = name?.trim() ?? "";
+      if (filmFollow) {
+        camera.zoom = 7.2;
+        camera.updateProjectionMatrix();
+      }
+    };
+    window.hawFilm = (mode) => {
+      if (mode === "hide" || mode === "chat" || mode === "off" || mode === "hud") setFilmMode(mode);
+    };
+    window.hawGo = (x, y) => {
+      playerCtl?.goTo(x, y);
+    };
+    window.hawMoving = () => Boolean(playerCtl?.moving());
+    window.hawMac = (panel) => {
+      setFilmMode("chat");
+      document.querySelector("#mac")?.classList.remove("collapsed");
+      const btn = document.querySelector<HTMLButtonElement>(`[data-mac="${panel}"]`);
+      btn?.click();
+    };
+    window.hawLook = (dir) => {
+      lookFrom(dir);
+      camera.zoom = 9.4;
+      camera.updateProjectionMatrix();
+    };
     const elev = elevatorSpawn(plate);
     const [ex, , ez] = toWorld(elev.x, elev.y, plate);
     elevX = ex;
@@ -601,7 +752,7 @@ loadPlate()
       return ids;
     };
 
-    const isSignedIn = () => Boolean(identity.email);
+    const isSignedIn = () => Boolean(identity.email) || filmActor;
     const askAccount = (reason: string) => {
       macCtl?.askSignIn(reason);
       status.textContent = reason;
@@ -832,7 +983,19 @@ loadPlate()
     };
 
     let parkedOutside = false;
+    let linkClockHeld = false;
     let identifyRoom: (() => void) | null = null;
+    const holdLinkClock = () => {
+      if (linkClockHeld || parkedOutside || guestShiftHeld || shiftStartedAt == null) return;
+      linkClockHeld = true;
+      pauseShiftClock();
+    };
+    const releaseLinkClock = () => {
+      if (!linkClockHeld) return;
+      linkClockHeld = false;
+      if (parkedOutside || guestShiftHeld) return;
+      resumeShiftClock();
+    };
 
     const placeAt = (x: number, y: number) => {
       playerCtl?.stand();
@@ -862,6 +1025,16 @@ loadPlate()
       if (pose) {
         const [wx, , wz] = toWorld(pose.x, pose.y, plate);
         centerCameraOn(wx, wz);
+      }
+      if (filmActor) {
+        filmFollow = "_self";
+        camera.zoom = 7.2;
+        camera.updateProjectionMatrix();
+      } else if (filmFollow) {
+        camera.zoom = 7;
+        camera.updateProjectionMatrix();
+      } else if (wantFilm) {
+        applyTeaserShot(plate, shotName || "elevator");
       }
       if (isSignedIn()) clearGuestSpent();
       else if (guestVisitSpent || readGuestSpent()) {
@@ -1013,7 +1186,7 @@ loadPlate()
     const room = connectRoom({
       roomId: plate.id,
       identity,
-      getToken: () => readToken(),
+      getToken: () => (filmActor ? "haw-fill-floor" : readToken()),
       getPose: () => playerCtl?.pose() ?? youAvatar,
       onWelcome: (peers, self, claims, mineBlocked, mineBlockedBy, officeAds, floor, openMax, floors, xp) => {
         if (mineBlocked?.length) {
@@ -1041,6 +1214,7 @@ loadPlate()
         syncMacDesk();
         paintFloorHud();
         setHudXp(xp ?? 0);
+        releaseLinkClock();
         if (welcomed) return;
         welcomed = true;
         const mine = desks.mine(identity.id);
@@ -1259,7 +1433,7 @@ loadPlate()
       },
       onBoot: (deskId, peerId) => {
         const mine = desks.mine(identity.id);
-        if (peerId === identity.id && mine) {
+        if (peerId === identity.id && mine && mine.privacy === "open") {
           mine.privacy = "busy";
           desks.apply(mine);
           syncMacDesk();
@@ -1305,7 +1479,10 @@ loadPlate()
         confReserve?.refresh();
       },
       onStatus: (text) => {
-        if (text === "offline") status.textContent = "offline";
+        if (text === "offline") {
+          status.textContent = "offline";
+          holdLinkClock();
+        }
       },
     });
     identifyRoom = () => room.identify();
@@ -1787,6 +1964,10 @@ loadPlate()
       claimShiftDesk.textContent = desks.pretty(desk);
       claimShift.hidden = false;
     };
+    window.hawOpenClaim = (deskId) => {
+      const desk = desks.get(deskId);
+      if (desk) showClaimShift(desk);
+    };
 
     const claimDesk = (desk: Desk) => {
       if (!isSignedIn()) {
@@ -1951,6 +2132,7 @@ loadPlate()
       macCtl?.setCompany(identity.company ?? "");
       macCtl?.setProfileUrl(identity.profileUrl ?? "");
       macCtl?.setAccount(identity.email);
+      if (filmActor) macCtl?.setAccount("ash@humansat.work");
     };
 
     const becomeSignedIn = async (
@@ -2262,6 +2444,9 @@ loadPlate()
         desks.apply(mine);
         room.sendPrivacy(privacy);
         mac.setPrivacy(privacy);
+        if (privacy === "focus" || privacy === "busy") {
+          evictDesk(mine.deskId, identity.id);
+        }
       },
       hasDesk: () => Boolean(desks.mine(identity.id)),
       signedIn: isSignedIn,
@@ -2330,6 +2515,12 @@ loadPlate()
       officeAd: {
         get: () => ({ enabled: officeAdState.enabled, previewUrl: officeAdState.url }),
         setEnabled: async (on) => {
+          if (filmActor) {
+            officeAdState = { ...officeAdState, enabled: on };
+            mac.setOfficeAd({ enabled: on, previewUrl: officeAdState.url });
+            paintOwnOfficeAd();
+            return;
+          }
           if (!isSignedIn()) {
             askAccount("Sign in to set a window ad.");
             mac.setOfficeAd({ enabled: officeAdState.enabled, previewUrl: officeAdState.url });
@@ -2346,6 +2537,22 @@ loadPlate()
           room.sendOfficeAd(officeAdState.enabled);
         },
         setImage: async (file) => {
+          if (filmActor) {
+            try {
+              const packed = await compressOfficeAd(file);
+              officeAdState = {
+                enabled: true,
+                hasImage: true,
+                rev: (officeAdState.rev || 0) + 1,
+                url: packed.dataUrl,
+              };
+              mac.setOfficeAd({ enabled: true, previewUrl: packed.dataUrl });
+              paintOwnOfficeAd();
+              return { ok: true, previewUrl: packed.dataUrl };
+            } catch (err) {
+              return { ok: false, error: err instanceof Error ? err.message : "Couldn't save." };
+            }
+          }
           if (!isSignedIn()) {
             askAccount("Sign in to set a window ad.");
             return { ok: false, error: "Sign in first." };
@@ -2402,6 +2609,7 @@ loadPlate()
       },
     });
     macCtl = mac;
+    if (filmActor) macCtl.setAccount("ash@humansat.work");
     paintFloorRoster();
     worldChat = connectWorldChat({
       identity,
@@ -2720,7 +2928,17 @@ function tick(render: boolean) {
   simulate(dt);
   if (!render) return;
   resize();
-  if (playerCtl?.moving() && livePlate) {
+  if (livePlate && filmFollow === "_self" && playerCtl) {
+    const pose = playerCtl.pose();
+    const [wx, , wz] = toWorld(pose.x, pose.y, livePlate);
+    centerCameraOn(wx, wz);
+  } else if (livePlate && filmFollow) {
+    const peer = remotesCtl?.poses().find((row) => row.name.toLowerCase() === filmFollow.toLowerCase());
+    if (peer) {
+      const [wx, , wz] = toWorld(peer.x, peer.y, livePlate);
+      centerCameraOn(wx, wz);
+    }
+  } else if (playerCtl?.moving() && livePlate) {
     const pose = playerCtl.pose();
     const [wx, , wz] = toWorld(pose.x, pose.y, livePlate);
     centerCameraOn(wx, wz);

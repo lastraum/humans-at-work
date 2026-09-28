@@ -1,9 +1,10 @@
 import { timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import type { IncomingMessage } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnv, type Plugin } from "vite";
+import { countedMs, holdContact, resumeContact } from "../src/linkHealth";
 import { bankMinutes, guestGrant, xpRateLabel } from "../src/xp";
 import { absorbUserXp, accountXpSummary, creditUserXp, hasUser, readUserXp } from "./auth";
 
@@ -28,7 +29,9 @@ type Visitor = {
   daysSeen: number;
 };
 
-type Store = { visitors: Visitor[] };
+type GateVisit = { id: string; seen: number; entered?: boolean };
+
+type Store = { visitors: Visitor[]; gate: GateVisit[] };
 
 type Socket = { readyState: number; send: (data: string) => void };
 
@@ -42,6 +45,10 @@ type Live = {
   guestMs: number;
   /** Guest visit is over; further time does not bank until sign-in. */
   held: boolean;
+  /** Link went quiet. Time after lastTickAt is not on the clock. */
+  suspended: boolean;
+  /** Silent stretches already excluded from this shift. */
+  droppedMs: number;
   tz?: string;
   country?: string;
 };
@@ -52,15 +59,58 @@ let queue: Promise<unknown> = Promise.resolve();
 let tick: ReturnType<typeof setInterval> | null = null;
 
 function emptyStore(): Store {
-  return { visitors: [] };
+  return { visitors: [], gate: [] };
+}
+
+const GATE_CAP = 8000;
+
+function gateId(value: unknown) {
+  const id = String(value ?? "").slice(0, 64);
+  return /^[A-Za-z0-9._:-]{8,}$/.test(id) ? id : "";
+}
+
+/** Someone loaded the page. Clocking in marks them entered; the row stays for the all-time count. */
+export function rememberGate(rows: GateVisit[], id: string, now: number) {
+  const hit = rows.find((row) => row.id === id);
+  if (hit) {
+    hit.seen = now;
+    hit.entered = false;
+    return;
+  }
+  rows.push({ id, seen: now, entered: false });
+  if (rows.length <= GATE_CAP) return;
+  const waiting = rows.filter((row) => !row.entered);
+  const done = rows.filter((row) => row.entered).sort((a, b) => a.seen - b.seen);
+  while (rows.length > GATE_CAP && done.length) {
+    const drop = done.shift();
+    const index = drop ? rows.indexOf(drop) : -1;
+    if (index >= 0) rows.splice(index, 1);
+  }
+  if (rows.length > GATE_CAP) {
+    waiting.sort((a, b) => a.seen - b.seen);
+    while (rows.length > GATE_CAP && waiting.length) {
+      const drop = waiting.shift();
+      const index = drop ? rows.indexOf(drop) : -1;
+      if (index >= 0) rows.splice(index, 1);
+    }
+  }
+}
+
+export function forgetGate(rows: GateVisit[], id: string) {
+  const hit = rows.find((row) => row.id === id);
+  if (hit) hit.entered = true;
 }
 
 function loadStore(): Store {
   try {
     const parsed = JSON.parse(readFileSync(storePath, "utf8")) as Partial<Store>;
     const visitors = Array.isArray(parsed.visitors) ? parsed.visitors : [];
+    const gate = Array.isArray(parsed.gate) ? parsed.gate : [];
     return {
       visitors: visitors.filter((row) => row && typeof row.id === "string" && row.id),
+      gate: gate
+        .filter((row) => row && gateId(row.id))
+        .map((row) => ({ id: row.id, seen: Number(row.seen) || 0, entered: row.entered === true })),
     };
   } catch {
     return emptyStore();
@@ -245,15 +295,44 @@ function takeGrant(live: Live, now = Date.now()) {
   return next.grant;
 }
 
+function pendingGrant(live: Live, now: number) {
+  if (live.suspended) return 0;
+  return takeGrant(live, now);
+}
+
 function finish(live: Live) {
   if (lives.get(live.id) === live) lives.delete(live.id);
   const now = Date.now();
-  const grant = takeGrant(live, now);
-  const duration = Math.max(0, now - live.startedAt);
+  const grant = pendingGrant(live, now);
+  const duration = countedMs(live.startedAt, live, now);
   void enqueue(async () => {
     await credit(live.id, grant);
     const store = loadStore();
     recordShift(store, live, duration, now);
+    saveStore(store);
+  });
+}
+
+export function noteLook(id: string) {
+  const clean = gateId(id);
+  if (!clean || isFloorBot(clean) || lives.has(clean)) return;
+  const now = Date.now();
+  void enqueue(() => {
+    if (lives.has(clean)) return;
+    const store = loadStore();
+    rememberGate(store.gate, clean, now);
+    saveStore(store);
+  });
+}
+
+function clearGate(id: string) {
+  const clean = gateId(id);
+  if (!clean) return;
+  void enqueue(() => {
+    const store = loadStore();
+    const hit = store.gate.find((row) => row.id === clean);
+    if (!hit || hit.entered) return;
+    forgetGate(store.gate, clean);
     saveStore(store);
   });
 }
@@ -267,11 +346,13 @@ export function noteHello(opts: {
   country?: string;
 }) {
   if (!opts.id || opts.bot || isFloorBot(opts.id)) return 0;
+  clearGate(opts.id);
   const now = Date.now();
   for (const [oldId, live] of lives) {
     if (live.ws !== opts.ws || oldId === opts.id) continue;
-    const grant = takeGrant(live, now);
+    const grant = pendingGrant(live, now);
     lives.delete(oldId);
+    clearGate(oldId);
     const signedIn = opts.signedIn || live.signedIn;
     const next: Live = {
       id: opts.id,
@@ -281,6 +362,8 @@ export function noteHello(opts: {
       signedIn,
       guestMs: signedIn ? 0 : live.guestMs,
       held: signedIn ? false : live.held,
+      suspended: false,
+      droppedMs: 0,
       tz: opts.tz || live.tz,
       country: opts.country || live.country,
     };
@@ -306,6 +389,21 @@ export function noteHello(opts: {
   }
 
   const existing = lives.get(opts.id);
+  if (existing?.suspended) {
+    resumeContact(existing, now);
+    existing.ws = opts.ws;
+    if (opts.signedIn && !existing.signedIn) existing.held = false;
+    existing.signedIn = existing.signedIn || opts.signedIn;
+    if (opts.tz) existing.tz = opts.tz;
+    if (opts.country) existing.country = opts.country;
+    void remember(opts.id, opts.ws, {
+      tz: existing.tz,
+      country: existing.country,
+      signedIn: existing.signedIn,
+      startedAt: existing.startedAt,
+    });
+    return balanceOf(opts.id);
+  }
   if (existing && existing.ws === opts.ws) {
     if (opts.signedIn && existing.held && !existing.signedIn) {
       existing.lastTickAt = now;
@@ -331,6 +429,8 @@ export function noteHello(opts: {
     signedIn: opts.signedIn,
     guestMs: 0,
     held: false,
+    suspended: false,
+    droppedMs: 0,
     tz: opts.tz,
     country: opts.country,
   });
@@ -355,6 +455,28 @@ export function noteShiftHold(id: string, ws: Socket) {
   });
 }
 
+/** Last pong is the end of counted time. The shift stays open for a reconnect. */
+export function holdShift(id: string, ws: Socket, goodAt: number) {
+  if (!id || isFloorBot(id)) return;
+  const live = lives.get(id);
+  if (!live || live.ws !== ws || live.suspended) return;
+  const now = Date.now();
+  const raw = holdContact(live, goodAt, now);
+  const next = guestGrant({
+    guestMs: live.guestMs,
+    elapsedMs: raw,
+    signedIn: live.signedIn,
+    held: live.held,
+  });
+  live.guestMs = next.guestMs;
+  live.held = next.held;
+  if (next.grant <= 0) return;
+  void enqueue(async () => {
+    const xp = await credit(id, next.grant);
+    if (lives.get(id)?.ws === ws) pushXp(ws, xp);
+  });
+}
+
 export function noteClose(id: string, ws: Socket) {
   if (!id || isFloorBot(id)) return;
   const live = lives.get(id);
@@ -367,6 +489,7 @@ export function startPresenceTick() {
   const handle = setInterval(() => {
     const now = Date.now();
     for (const live of lives.values()) {
+      if (live.suspended) continue;
       if (now - live.lastTickAt < 30_000) continue;
       const grant = takeGrant(live, now);
       if (grant <= 0) continue;
@@ -433,6 +556,7 @@ function dashboardHtml() {
   let todayShifts = 0;
   let todayMs = 0;
   let todayHumans = 0;
+  let finishedHumans = 0;
   const seen = new Set<string>();
   const zones = new Map<string, { people: number; ms: number }>();
   const countries = new Map<string, { people: number; ms: number }>();
@@ -443,6 +567,7 @@ function dashboardHtml() {
     const ms = Math.max(0, Number(row.totalMs) || 0);
     shifts += sessions;
     totalMs += ms;
+    if (sessions >= 1) finishedHumans += 1;
     if (sessions >= 2) repeat += 1;
     if ((row.daysSeen || 0) >= 2) anotherDay += 1;
     if (row.everSignedIn) signedInVisitors += 1;
@@ -468,30 +593,52 @@ function dashboardHtml() {
 
   let openMs = 0;
   for (const live of lives.values()) {
-    openMs += Math.max(0, now - live.startedAt);
+    openMs += countedMs(live.startedAt, live, now);
     seen.add(live.id);
   }
   const unique = seen.size;
   const average = shifts ? totalMs / shifts : 0;
   const zoneRows = [...zones.entries()].sort((a, b) => b[1].ms - a[1].ms || b[1].people - a[1].people);
   const countryRows = [...countries.entries()].sort((a, b) => b[1].people - a[1].people || b[1].ms - a[1].ms);
+  const loadedToday = store.gate.filter((row) => row.seen > 0 && ptDay(row.seen) === today);
+  const waiting = store.gate.filter((row) => !row.entered);
+  const waitingToday = loadedToday.filter((row) => !row.entered);
+  const todayLabel = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    month: "short",
+    day: "numeric",
+  }).format(now);
 
-  const cards: [string, string][] = [
+  const nowCards: [string, string][] = [
     [String(lives.size), "On the floor now"],
     [formatDuration(openMs), "Open shifts, so far"],
+  ];
+  const todayCards: [string, string][] = [
+    [String(todayHumans), "Humans who finished a shift"],
+    [String(todayShifts), "Shifts finished"],
+    [formatDuration(todayMs), "Time on the clock"],
+    [String(loadedToday.length), "Loaded the page"],
+    [String(waitingToday.length), "Visited, didn't enter"],
+  ];
+  const allCards: [string, string][] = [
+    [String(finishedHumans), "Humans who finished a shift"],
+    [String(shifts), "Shifts finished"],
+    [formatDuration(totalMs), "Time on the clock"],
+    [shifts ? formatDuration(average) : "—", "Average shift"],
     [String(unique), "Unique visitors"],
+    [String(store.gate.length), "Loaded the page"],
+    [String(waiting.length), "Visited, didn't enter"],
     [String(repeat), "Repeat (2+ shifts)"],
     [String(anotherDay), "Came back another day"],
-    [String(shifts), "Finished shifts"],
-    [shifts ? formatDuration(average) : "—", "Average shift"],
-    [formatDuration(totalMs), "Time on the clock"],
-    [String(todayHumans), "Humans who finished a shift today"],
-    [String(todayShifts), "Shifts finished today"],
-    [formatDuration(todayMs), "Time finished today"],
     [String(signedInVisitors), "Visitors who signed in"],
     [String(accounts.accounts), "Accounts"],
     [(accounts.xp + guestXp).toLocaleString("en-US"), "XP on the books"],
   ];
+
+  const cardsHtml = (cards: [string, string][]) =>
+    `<div class="grid">${cards
+      .map(([value, label]) => `<div class="card"><b>${esc(value)}</b><span>${esc(label)}</span></div>`)
+      .join("")}</div>`;
 
   const table = (head: string, rows: string) =>
     rows
@@ -540,16 +687,70 @@ function dashboardHtml() {
 </head>
 <body>
   <h1>Humans at Work</h1>
-  <p>Shifts are room connections. A page load that never clocks in is not counted. Today is Pacific. ${esc(xpRateLabel())}.</p>
-  <div class="grid">
-    ${cards
-      .map(([value, label]) => `<div class="card"><b>${esc(value)}</b><span>${esc(label)}</span></div>`)
-      .join("")}
-  </div>
+  <p>Shifts are room connections. Today is Pacific. ${esc(xpRateLabel())}.</p>
+  <h2>Right now</h2>
+  ${cardsHtml(nowCards)}
+  <h2>Today</h2>
+  <p>${esc(todayLabel)}, Pacific. Loaded the page and visited, didn't enter count this Pacific day.</p>
+  ${cardsHtml(todayCards)}
+  <h2>All time</h2>
+  <p>Totals since this floor started keeping them. Clocking in keeps a page load in the all-time count.</p>
+  ${cardsHtml(allCards)}
   ${zoneTable}
   ${countryTable}
 </body>
 </html>`;
+}
+
+const lookHits = new Map<string, { n: number; reset: number }>();
+
+function allowLook(ip: string) {
+  const now = Date.now();
+  const row = lookHits.get(ip);
+  if (!row || row.reset < now) {
+    lookHits.set(ip, { n: 1, reset: now + 10 * 60_000 });
+    return true;
+  }
+  row.n += 1;
+  return row.n <= 60;
+}
+
+function clientIp(req: IncomingMessage) {
+  const fwd = req.headers["x-forwarded-for"];
+  const raw = Array.isArray(fwd) ? fwd[0] : fwd;
+  const hop = String(raw ?? "").split(",")[0].trim();
+  return hop || req.socket.remoteAddress || "unknown";
+}
+
+function readLook(req: IncomingMessage, res: ServerResponse) {
+  if (!allowLook(clientIp(req))) {
+    res.statusCode = 204;
+    res.end();
+    return;
+  }
+  const chunks: Buffer[] = [];
+  let size = 0;
+  req.on("data", (chunk: Buffer) => {
+    size += chunk.length;
+    if (size <= 512) chunks.push(chunk);
+  });
+  req.on("end", () => {
+    let body: { id?: unknown; retire?: unknown } = {};
+    if (size <= 512) {
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as typeof body;
+      } catch {
+        body = {};
+      }
+    }
+    if (body.retire) clearGate(String(body.retire));
+    if (body.id) noteLook(String(body.id));
+    res.statusCode = 204;
+    res.end();
+  });
+  req.on("error", () => {
+    if (!res.writableEnded) res.end();
+  });
 }
 
 function secretMatch(pathname: string, secret: string) {
@@ -578,6 +779,15 @@ export function presencePlugin(): Plugin {
       const enabled = /^[A-Za-z0-9_-]{16,128}$/.test(secret);
       server.middlewares.use((req, res, next) => {
         const url = new URL(req.url ?? "/", "http://localhost");
+        if (url.pathname === "/__presence/look") {
+          if ((req.method ?? "GET") !== "POST") {
+            res.statusCode = 405;
+            res.end();
+            return;
+          }
+          void readLook(req, res);
+          return;
+        }
         if (url.pathname === "/data/presence.json" || url.pathname === "/presence.json") {
           res.statusCode = 404;
           res.end();

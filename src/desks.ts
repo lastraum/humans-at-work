@@ -58,7 +58,7 @@ export type Seat = {
 
 function isSittable(type: string) {
   if (type === "beanbag" || type === "couch") return true;
-  if (type.includes("sofa") || type.includes("chair")) return true;
+  if (type.includes("sofa") || type.includes("chair") || type.startsWith("stool")) return true;
   return false;
 }
 
@@ -132,12 +132,20 @@ function faceBeanbagInward(node: THREE.Object3D, seat: Seat, plate: FloorPlate) 
 /** Desk chairs face the opposite way of the Kenney mesh. Bags and lounges use item.facing. */
 function sitFacingOf(itemFacing: number, roomRot: number, type: string) {
   const furnFacing = (((itemFacing ?? 0) + roomRot) % 360 + 360) % 360;
-  if (isCouchLike(type) || type.startsWith("lounge") || type === "beanbag") return furnFacing;
+  if (isCouchLike(type) || type.startsWith("lounge") || type === "beanbag") {
+    return furnFacing;
+  }
   return (furnFacing + 180) % 360;
 }
 
 export function sitHeightFor(type: string) {
-  const base = type === "beanbag" ? 0.36 : isCouchLike(type) || type.startsWith("lounge") ? 0.26 : 0.228;
+  const base = type.startsWith("stool")
+    ? 0.435
+    : type === "beanbag"
+      ? 0.36
+      : isCouchLike(type) || type.startsWith("lounge")
+        ? 0.26
+        : 0.36 * 1.2;
   return base * ENV_SCALE;
 }
 

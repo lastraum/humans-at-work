@@ -1454,6 +1454,28 @@ body.editing #mac-stack {
   cursor: default;
 }
 
+body.film #hud,
+body.film #hud-side,
+body.film #cam-pad {
+  display: none !important;
+}
+
+body.film.film-hud #hud {
+  display: block !important;
+}
+
+body.film:not(.film-chat) #mac-stack {
+  display: none !important;
+}
+
+body.film #mac-peek,
+body.film #person-card,
+body.film #ad-visit,
+body.film #mac-logout,
+body.film #mac-account-in > p.mac-hint:first-of-type {
+  display: none !important;
+}
+
 #cam-pad {
   position: fixed;
   left: 24px;

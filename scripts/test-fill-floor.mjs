@@ -45,7 +45,7 @@ function occupiedSeat(office) {
   const rows = office.rows ?? 1;
   const cx = (cols * cell) / 2;
   const cy = (rows * cell) / 2;
-  const local = chair?.occupied ?? { x: chair?.x ?? cx, y: chair?.y ?? cy, facing: chair?.facing ?? 0 };
+  const local = chair?.occupied ?? { x: chair?.x ?? cx, y: chair?.y ?? cy };
   const dx = (local.x ?? cx) - cx;
   const dy = (local.y ?? cy) - cy;
   const rot = office.rot ?? 0;
@@ -61,7 +61,7 @@ function occupiedSeat(office) {
     rx = dy;
     ry = -dx;
   }
-  const facing = (((local.facing ?? 0) + rot + 180) % 360 + 360) % 360;
+  const facing = (((chair?.facing ?? 0) + rot + 180) % 360 + 360) % 360;
   return {
     x: office.col * cell + cx + rx,
     y: office.row * cell + cy + ry,

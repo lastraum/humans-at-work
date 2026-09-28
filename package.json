@@ -9,8 +9,11 @@
     "generate:floor": "node scripts/generate-floor-plate.mjs",
     "test:floors": "npx tsx scripts/test-floors.mjs",
     "test:xp": "npx tsx scripts/test-xp.mjs",
+    "test:link": "npx tsx scripts/test-link.mjs",
+    "test:gate": "npx tsx scripts/test-gate.mjs",
     "test:reservations": "npx tsx scripts/test-reservations.mjs",
     "fill:floor": "node scripts/test-fill-floor.mjs",
+    "teaser": "node scripts/teaser-floor.mjs",
     "vendor:assets": "./scripts/vendor-claw3d-assets.sh"
   },
   "dependencies": {

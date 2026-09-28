@@ -25,7 +25,8 @@ import {
 } from "../src/protocol";
 import { FIRST_FLOOR, groupClaimsByFloor, selectableFloors, sameFloors } from "../src/floors";
 import { officeAdForPeer, setUserBlock, userBlocks, userIdForToken, whoBlocked } from "./auth";
-import { clockZone, countryFrom, isFloorBot, noteClose, noteHello, noteShiftHold, startPresenceTick, stopPresenceTick } from "./presence";
+import { PING_MS, RECOVERY_MS, nextPingSample } from "../src/linkHealth";
+import { clockZone, countryFrom, holdShift, isFloorBot, noteClose, noteHello, noteShiftHold, startPresenceTick, stopPresenceTick } from "./presence";
 import {
   joinReservation,
   knownConferenceIds,
@@ -125,6 +126,46 @@ const confAdmitted = new Map<string, Map<string, Set<string>>>();
 /** buildingId → conferenceId → last live reservation snapshot */
 const confLastLive = new Map<string, Map<string, { id: string; access: "open" | "code" } | null>>();
 let confSweep: ReturnType<typeof setInterval> | null = null;
+let linkSweep: ReturnType<typeof setInterval> | null = null;
+
+type LinkHealth = {
+  alive: boolean;
+  misses: number;
+  lastPongAt: number;
+  recovering: boolean;
+  /** Close from a missed-pong recovery. Keep the shift until hello or the window ends. */
+  quietClose: boolean;
+};
+
+type Recovery = {
+  roomId: string;
+  peerId: string;
+  ws: WebSocket;
+  until: number;
+};
+
+const linkHealth = new WeakMap<WebSocket, LinkHealth>();
+const recoveries = new Map<string, Recovery>();
+
+function healthOf(ws: WebSocket) {
+  let health = linkHealth.get(ws);
+  if (!health) {
+    health = { alive: true, misses: 0, lastPongAt: Date.now(), recovering: false, quietClose: false };
+    linkHealth.set(ws, health);
+  }
+  return health;
+}
+
+function noteSocketContact(ws: WebSocket) {
+  const health = healthOf(ws);
+  health.alive = true;
+  health.misses = 0;
+  health.lastPongAt = Date.now();
+}
+
+function recoveryKey(roomId: string, peerId: string) {
+  return `${roomId}\0${peerId}`;
+}
 
 function loadQuietCells(): Set<string> {
   const cells = new Set<string>();
@@ -577,6 +618,82 @@ function takeSeat(roomId: string, floor: number, peerId: string, seatId: string)
   return true;
 }
 
+function dropSlot(roomId: string, room: Map<string, Slot>, peerId: string) {
+  const slot = room.get(peerId);
+  if (!slot) return;
+  const floor = peerFloor(slot.peer);
+  endWhispersFor(room, roomId, peerId, "left");
+  room.delete(peerId);
+  const claims = claimsOf(roomId);
+  const before = catalogOf(claims).floors;
+  releasePeer(roomId, room, peerId);
+  releaseSeat(roomId, peerId);
+  broadcastFloor(room, floor, peerId, { type: "leave", id: peerId });
+  if (room.size === 0) {
+    rooms.delete(roomId);
+    claimsByRoom.delete(roomId);
+    whispersByRoom.delete(roomId);
+    seatsByRoom.delete(roomId);
+    return;
+  }
+  if (!sameFloors(catalogOf(claims).floors, before)) publishFloors(room, claims);
+}
+
+function beginRecovery(roomId: string, peerId: string, ws: WebSocket) {
+  const key = recoveryKey(roomId, peerId);
+  if (recoveries.has(key)) return;
+  const health = healthOf(ws);
+  if (health.recovering) return;
+  health.recovering = true;
+  health.quietClose = true;
+  holdShift(peerId, ws, health.lastPongAt);
+  recoveries.set(key, { roomId, peerId, ws, until: Date.now() + RECOVERY_MS });
+  try {
+    ws.terminate();
+  } catch {
+    /* already closed */
+  }
+}
+
+function expireRecovery(key: string, rec: Recovery) {
+  recoveries.delete(key);
+  const room = rooms.get(rec.roomId);
+  const slot = room?.get(rec.peerId);
+  if (!room || !slot || slot.ws !== rec.ws) return;
+  noteClose(rec.peerId, rec.ws);
+  dropSlot(rec.roomId, room, rec.peerId);
+}
+
+function sweepLinks() {
+  const now = Date.now();
+  for (const [roomId, room] of rooms) {
+    for (const [peerId, slot] of [...room]) {
+      const health = healthOf(slot.ws);
+      if (health.recovering) continue;
+      if (slot.ws.readyState !== WebSocket.OPEN) {
+        beginRecovery(roomId, peerId, slot.ws);
+        continue;
+      }
+      const step = nextPingSample(health);
+      health.misses = step.misses;
+      if (step.recover) {
+        beginRecovery(roomId, peerId, slot.ws);
+        continue;
+      }
+      health.alive = false;
+      try {
+        slot.ws.ping();
+      } catch {
+        beginRecovery(roomId, peerId, slot.ws);
+      }
+    }
+  }
+  for (const [key, rec] of [...recoveries]) {
+    if (now < rec.until) continue;
+    expireRecovery(key, rec);
+  }
+}
+
 function roomIdOf(req: IncomingMessage) {
   try {
     const url = new URL(req.url ?? ROOM_PATH, "http://localhost");
@@ -602,9 +719,15 @@ function attachRoom(httpServer: Server) {
   };
   httpServer.prependListener("upgrade", onUpgrade);
   if (!confSweep) confSweep = setInterval(sweepConferenceRooms, 4000);
+  if (!linkSweep) {
+    linkSweep = setInterval(sweepLinks, PING_MS);
+    if (typeof linkSweep === "object" && linkSweep && "unref" in linkSweep) linkSweep.unref();
+  }
   startPresenceTick();
 
   wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
+    healthOf(ws);
+    ws.on("pong", () => noteSocketContact(ws));
     const roomId = roomIdOf(req);
     let room = rooms.get(roomId);
     if (!room) {
@@ -614,6 +737,7 @@ function attachRoom(httpServer: Server) {
     let selfId = "";
 
     ws.on("message", (data) => {
+      noteSocketContact(ws);
       let msg: ClientMsg;
       try {
         msg = JSON.parse(String(data)) as ClientMsg;
@@ -671,7 +795,10 @@ function attachRoom(httpServer: Server) {
           (ownClaim && claimFloor(ownClaim) === wanted) ||
           Boolean(existing && peerFloor(existing.peer) === wanted);
         const floor = stay ? wanted : FIRST_FLOOR;
-        const chatAvailable = Boolean(existing && existing.ws === ws && existing.chatAvailable);
+        const sameLink = Boolean(
+          existing && (existing.ws === ws || healthOf(existing.ws).recovering),
+        );
+        const chatAvailable = Boolean(sameLink && existing.chatAvailable);
         const company = clampCompany(msg.company) || undefined;
         const profileUrl = clampProfileUrl(msg.profileUrl) || undefined;
         const peer: Peer = {
@@ -698,7 +825,7 @@ function attachRoom(httpServer: Server) {
         selfId = id;
         const blocked = new Set([
           ...(signedIn ? userBlocks(id) : []),
-          ...(existing && existing.ws === ws ? existing.blocked : []),
+          ...(sameLink && existing ? existing.blocked : []),
         ]);
         room!.set(id, { ws, peer, signedIn, blocked, chatAvailable });
         if (previous) previous.close(REPLACED, "replaced");
@@ -710,6 +837,7 @@ function attachRoom(httpServer: Server) {
           if (claim.peerId === id) syncClaimAd(claim);
         }
         const view = viewOf(room!, claims, floor, id);
+        recoveries.delete(recoveryKey(roomId, id));
         const xp = noteHello({
           id,
           ws,
@@ -973,7 +1101,11 @@ function attachRoom(httpServer: Server) {
         for (const claim of claimsOf(roomId).values()) {
           if (claim.peerId !== selfId) continue;
           claim.privacy = privacy;
-          broadcastFloor(room!, claimFloor(claim), null, { type: "claim", claim });
+          const floor = claimFloor(claim);
+          broadcastFloor(room!, floor, null, { type: "claim", claim });
+          if (privacy === "focus" || privacy === "busy") {
+            broadcastFloor(room!, floor, null, { type: "boot", deskId: claim.deskId, peerId: selfId });
+          }
         }
         return;
       }
@@ -1277,25 +1409,14 @@ function attachRoom(httpServer: Server) {
     });
 
     ws.on("close", () => {
-      if (selfId) noteClose(selfId, ws);
+      if (healthOf(ws).quietClose) return;
+      if (selfId) {
+        recoveries.delete(recoveryKey(roomId, selfId));
+        noteClose(selfId, ws);
+      }
       const slot = selfId ? room!.get(selfId) : undefined;
       if (!slot || slot.ws !== ws) return;
-      const floor = peerFloor(slot.peer);
-      endWhispersFor(room!, roomId, selfId, "left");
-      room!.delete(selfId);
-      const claims = claimsOf(roomId);
-      const before = catalogOf(claims).floors;
-      releasePeer(roomId, room!, selfId);
-      releaseSeat(roomId, selfId);
-      broadcastFloor(room!, floor, selfId, { type: "leave", id: selfId });
-      if (room!.size === 0) {
-        rooms.delete(roomId);
-        claimsByRoom.delete(roomId);
-        whispersByRoom.delete(roomId);
-        seatsByRoom.delete(roomId);
-        return;
-      }
-      if (!sameFloors(catalogOf(claims).floors, before)) publishFloors(room!, claims);
+      dropSlot(roomId, room!, selfId);
     });
   });
 
@@ -1305,6 +1426,11 @@ function attachRoom(httpServer: Server) {
       clearInterval(confSweep);
       confSweep = null;
     }
+    if (linkSweep) {
+      clearInterval(linkSweep);
+      linkSweep = null;
+    }
+    recoveries.clear();
     stopPresenceTick();
   });
 }

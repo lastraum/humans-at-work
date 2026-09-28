@@ -1,6 +1,8 @@
 node_modules
 dist
 .DS_Store
+teaser.mp4
+teaser.webm
 .env
 .env.local
 data/accounts.json

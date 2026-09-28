@@ -1,11 +1,11 @@
 import * as THREE from "three";
 import { hashId, resolveLook, type AvatarGender } from "./avatarLook";
-import { ENV_SCALE, FURNITURE_SCALE, toWorld } from "./coords";
-import { chairSeat } from "./desks";
+import { toWorld } from "./coords";
+import { chairSeat, sitHeightFor } from "./desks";
 import type { Avatar, FloorPlate, FurnitureItem, OfficeInstance } from "./types";
 
-/** Kenney chair seat is y=0.19 native; chairs are scaled in FURNITURE_SCALE. */
-const CHAIR_SEAT_Y = 0.19 * (FURNITURE_SCALE.chair?.[1] ?? 1.2) * ENV_SCALE;
+/** chairDesk cushion ~0.34 native; sitHeightFor adds a small lift so hips sit on the pad. */
+const CHAIR_SEAT_Y = sitHeightFor("chair");
 
 /**
  * Claw3D retro agents, rebuilt here as a pivot body (arms, legs, eyes).

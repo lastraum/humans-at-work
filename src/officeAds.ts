@@ -265,6 +265,23 @@ export function applyOfficeAd(group: THREE.Object3D, url: string | null) {
     mountAd(group, makeFillAdTexture(url));
     return;
   }
+  if (url.startsWith("data:") || url.startsWith("blob:")) {
+    const img = new Image();
+    img.onload = () => {
+      if (group.userData.officeAdGen !== gen || group.userData.officeAdUrl !== url) return;
+      const tex = new THREE.Texture(img);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 4;
+      tex.needsUpdate = true;
+      mountAd(group, tex);
+    };
+    img.onerror = () => {
+      if (group.userData.officeAdGen !== gen) return;
+      clearOfficeAd(group);
+    };
+    img.src = url;
+    return;
+  }
   loader.load(
     url,
     (tex) => {

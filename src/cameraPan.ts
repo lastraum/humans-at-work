@@ -28,6 +28,7 @@ export function attachCameraPan(opts: {
   const held = new Set<string>();
   const look = new THREE.Vector3();
   const right = new THREE.Vector3();
+  const slide = new THREE.Vector3();
   const up = new THREE.Vector3(0, 1, 0);
   const offset = new THREE.Vector3();
   const ORBIT_SPEED = 1.35;
@@ -99,10 +100,16 @@ export function attachCameraPan(opts: {
       look.normalize();
       right.crossVectors(look, up).normalize();
       const speed = 14 * dt;
-      if (held.has("w")) controls.target.addScaledVector(look, speed);
-      if (held.has("s")) controls.target.addScaledVector(look, -speed);
-      if (held.has("d")) controls.target.addScaledVector(right, speed);
-      if (held.has("a")) controls.target.addScaledVector(right, -speed);
+      slide.set(0, 0, 0);
+      if (held.has("w")) slide.addScaledVector(look, speed);
+      if (held.has("s")) slide.addScaledVector(look, -speed);
+      if (held.has("d")) slide.addScaledVector(right, speed);
+      if (held.has("a")) slide.addScaledVector(right, -speed);
+      // Move the eye with the target. Sliding only the target makes the camera turn.
+      if (slide.lengthSq() > 0) {
+        controls.target.add(slide);
+        camera.position.add(slide);
+      }
       clampTarget();
     },
   };
