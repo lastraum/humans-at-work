@@ -25,8 +25,10 @@ import {
   fetchOfficeAd,
   loginWithGoogle,
   logoutAccount,
+  fetchFilmGrant,
   readToken,
   restoreAccount,
+  type FilmShot,
   saveAccountName,
   saveAccountProfile,
   saveBlock,
@@ -318,12 +320,13 @@ const shotName = (filmParams.get("shot") ?? "").trim().toLowerCase();
 const filmQuery = filmParams.get("film");
 const filmFollowName = (filmParams.get("follow") ?? "").trim();
 const wantFilm = filmParams.has("film") || Boolean(shotName) || Boolean(filmFollowName);
-const filmActor =
-  wantFilm && (location.hostname === "127.0.0.1" || location.hostname === "localhost");
 type FilmMode = "off" | "hide" | "chat" | "hud";
 const filmOrder: FilmMode[] = ["off", "hide", "chat", "hud"];
 let filmMode: FilmMode = "off";
-let filmFollow = filmFollowName;
+let filmFollow = "";
+let filmArmed = false;
+let filmShots: Record<string, FilmShot> = {};
+let filmKeysInstalled = false;
 
 function isTypingTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
@@ -338,42 +341,9 @@ function setFilmMode(mode: FilmMode) {
   document.body.classList.toggle("film-hud", mode === "hud");
 }
 
-if (wantFilm) setFilmMode(filmQuery === "chat" || shotName === "chat" ? "chat" : "hide");
-
-if (wantFilm) {
-  window.addEventListener("keydown", (event) => {
-    if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
-    if (isTypingTarget(event.target)) return;
-    if (event.key !== "h" && event.key !== "H") return;
-    const next = filmOrder[(filmOrder.indexOf(filmMode) + 1) % filmOrder.length] ?? "off";
-    setFilmMode(next);
-    event.preventDefault();
-  });
-}
-
-const TEASER_SHOTS: Record<
-  string,
-  { x: number; y: number; zoom: number; film?: FilmMode; look?: "w" | "e" | "s" | "n" }
-> = {
-  elevator: { x: 448, y: 1214, zoom: 8 },
-  kitchen: { x: 455, y: 1495, zoom: 8.6 },
-  hall: { x: 300, y: 1580, zoom: 6.8 },
-  rec: { x: 620, y: 2188, zoom: 8.3 },
-  door: { x: 205, y: 1342, zoom: 9.2 },
-  office: { x: 95, y: 1343, zoom: 10.2 },
-  window: { x: 18, y: 1408, zoom: 8.4 },
-  "lina-inside": { x: 95, y: 1343, zoom: 10.2, film: "chat" },
-  "ash-inside": { x: 1288, y: 1343, zoom: 9.6, look: "w" },
-  "ash-window": { x: 1288, y: 1343, zoom: 8.4, look: "w" },
-  chat: { x: 455, y: 1495, zoom: 8.2, film: "chat" },
-  whisper: { x: 455, y: 1495, zoom: 8.2, film: "chat" },
-  focus: { x: 1288, y: 1343, zoom: 8.8, look: "w" },
-  xp: { x: 360, y: 1520, zoom: 6.3, film: "hud" },
-  clockout: { x: 448, y: 1214, zoom: 8 },
-};
-
 function applyTeaserShot(plate: FloorPlate, name = shotName) {
-  const shot = TEASER_SHOTS[name] ?? (wantFilm && !name ? TEASER_SHOTS.kitchen : null);
+  if (!filmArmed) return;
+  const shot = filmShots[name] ?? (wantFilm && !name ? filmShots.kitchen : null);
   if (!shot) return;
   const [wx, , wz] = toWorld(shot.x, shot.y, plate);
   camera.zoom = shot.zoom;
@@ -565,23 +535,9 @@ loadPlate()
     });
     editor.setEnabled(false);
 
-    let session = filmActor ? null : await restoreAccount();
+    let session = await restoreAccount();
     if (!session) clearAccountEmail();
     const identity = session ? applyAccount(session.user) : ensureIdentity();
-    if (filmActor) {
-      identity.id = "bot-teaser-you";
-      identity.name = "Ash";
-      identity.email = undefined;
-      identity.look = {
-        gender: "m",
-        skin: "#c68642",
-        hair: "#2a2118",
-        eyes: "#3d6cb5",
-        shirt: "#80b918",
-        pants: "#2c3340",
-      };
-      identity.color = identity.look.shirt;
-    }
     postLook({ id: identity.id });
     let guest = session
       ? await ensureSessionWallet(session.token)
@@ -595,7 +551,7 @@ loadPlate()
     writeBlocked([...blocked]);
     selfId = identity.id;
     selfName = identity.name;
-    selfSignedIn = Boolean(identity.email) || filmActor;
+    selfSignedIn = Boolean(identity.email);
     let officeAdState: OfficeAdProfile = session?.officeAd ?? {
       enabled: false,
       hasImage: false,
@@ -688,37 +644,6 @@ loadPlate()
     };
 
     livePlate = plate;
-    if (wantFilm) window.hawShot = (name: string) => {
-      filmFollow = "";
-      const shot = TEASER_SHOTS[name];
-      setFilmMode(shot?.film ?? "hide");
-      applyTeaserShot(plate, name);
-    };
-    if (wantFilm) window.hawFollow = (name) => {
-      filmFollow = name?.trim() ?? "";
-      if (filmFollow) {
-        camera.zoom = 7.2;
-        camera.updateProjectionMatrix();
-      }
-    };
-    if (wantFilm) window.hawFilm = (mode) => {
-      if (mode === "hide" || mode === "chat" || mode === "off" || mode === "hud") setFilmMode(mode);
-    };
-    if (wantFilm) window.hawGo = (x, y) => {
-      playerCtl?.goTo(x, y);
-    };
-    if (wantFilm) window.hawMoving = () => Boolean(playerCtl?.moving());
-    if (wantFilm) window.hawMac = (panel) => {
-      setFilmMode("chat");
-      document.querySelector("#mac")?.classList.remove("collapsed");
-      const btn = document.querySelector<HTMLButtonElement>(`[data-mac="${panel}"]`);
-      btn?.click();
-    };
-    if (wantFilm) window.hawLook = (dir) => {
-      lookFrom(dir);
-      camera.zoom = 9.4;
-      camera.updateProjectionMatrix();
-    };
     const elev = elevatorSpawn(plate);
     const [ex, , ez] = toWorld(elev.x, elev.y, plate);
     elevX = ex;
@@ -754,7 +679,7 @@ loadPlate()
       return ids;
     };
 
-    const isSignedIn = () => Boolean(identity.email) || filmActor;
+    const isSignedIn = () => Boolean(identity.email);
     const askAccount = (reason: string) => {
       macCtl?.askSignIn(reason);
       status.textContent = reason;
@@ -1028,14 +953,10 @@ loadPlate()
         const [wx, , wz] = toWorld(pose.x, pose.y, plate);
         centerCameraOn(wx, wz);
       }
-      if (filmActor) {
-        filmFollow = "_self";
-        camera.zoom = 7.2;
+      if (filmArmed && filmFollow) {
+        camera.zoom = filmFollow === "_self" ? 7.2 : 7;
         camera.updateProjectionMatrix();
-      } else if (filmFollow) {
-        camera.zoom = 7;
-        camera.updateProjectionMatrix();
-      } else if (wantFilm) {
+      } else if (filmArmed && wantFilm) {
         applyTeaserShot(plate, shotName || "elevator");
       }
       if (isSignedIn()) clearGuestSpent();
@@ -1044,6 +965,92 @@ loadPlate()
         else guestHoldPending = true;
       }
     };
+
+    let openFilmClaim: ((deskId: string) => void) | null = null;
+
+    const installFilmTools = () => {
+      if (filmKeysInstalled) return;
+      filmKeysInstalled = true;
+      window.addEventListener("keydown", (event) => {
+        if (!filmArmed) return;
+        if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+        if (isTypingTarget(event.target)) return;
+        if (event.key !== "h" && event.key !== "H") return;
+        const next = filmOrder[(filmOrder.indexOf(filmMode) + 1) % filmOrder.length] ?? "off";
+        setFilmMode(next);
+        event.preventDefault();
+      });
+      window.hawShot = (name: string) => {
+        if (!filmArmed) return;
+        const shot = filmShots[name];
+        if (!shot) return;
+        filmFollow = "";
+        setFilmMode(shot.film ?? "hide");
+        applyTeaserShot(plate, name);
+      };
+      window.hawFollow = (name) => {
+        if (!filmArmed) return;
+        filmFollow = name?.trim() ?? "";
+        if (filmFollow) {
+          camera.zoom = 7.2;
+          camera.updateProjectionMatrix();
+        }
+      };
+      window.hawFilm = (mode) => {
+        if (!filmArmed) return;
+        if (mode === "hide" || mode === "chat" || mode === "off" || mode === "hud") setFilmMode(mode);
+      };
+      window.hawGo = (x, y) => {
+        if (!filmArmed) return;
+        playerCtl?.goTo(x, y);
+      };
+      window.hawMoving = () => (filmArmed ? Boolean(playerCtl?.moving()) : false);
+      window.hawMac = (panel) => {
+        if (!filmArmed) return;
+        setFilmMode("chat");
+        document.querySelector("#mac")?.classList.remove("collapsed");
+        const btn = document.querySelector<HTMLButtonElement>(`[data-mac="${panel}"]`);
+        btn?.click();
+      };
+      window.hawLook = (dir) => {
+        if (!filmArmed) return;
+        lookFrom(dir);
+        camera.zoom = 9.4;
+        camera.updateProjectionMatrix();
+      };
+      window.hawOpenClaim = (deskId) => {
+        if (!filmArmed) return;
+        openFilmClaim?.(deskId);
+      };
+    };
+
+    const disarmFilm = () => {
+      filmArmed = false;
+      filmFollow = "";
+      filmShots = {};
+      setFilmMode("off");
+    };
+
+    const enableFilm = async (token: string) => {
+      if (!wantFilm || filmArmed || !token) return;
+      const shots = await fetchFilmGrant(token);
+      if (!shots) return;
+      filmShots = shots;
+      filmArmed = true;
+      filmFollow = filmFollowName;
+      setFilmMode(filmQuery === "chat" || shotName === "chat" ? "chat" : "hide");
+      installFilmTools();
+      if (joinGate.hidden) {
+        if (filmFollow) {
+          camera.zoom = filmFollow === "_self" ? 7.2 : 7;
+          camera.updateProjectionMatrix();
+        } else {
+          applyTeaserShot(plate, shotName || "elevator");
+        }
+      }
+    };
+
+    if (session?.token) await enableFilm(session.token);
 
     await new Promise<void>((resolve) => {
       const finish = () => {
@@ -1068,6 +1075,7 @@ loadPlate()
             guest = await ensureGuestWallet(identity.id);
             identity.address = guest.address;
             selfSignedIn = false;
+            disarmFilm();
             youAvatar.id = identity.id;
             youAvatar.name = identity.name;
             setAvatarName(you, identity.name);
@@ -1116,6 +1124,7 @@ loadPlate()
               selfId = identity.id;
               selfName = identity.name;
               selfSignedIn = true;
+              await enableFilm(result.token);
               finish();
               identifyRoom?.();
             });
@@ -1178,6 +1187,7 @@ loadPlate()
             selfId = identity.id;
             selfName = identity.name;
             selfSignedIn = true;
+            await enableFilm(result.token);
             finish();
             identifyRoom?.();
           });
@@ -1188,7 +1198,7 @@ loadPlate()
     const room = connectRoom({
       roomId: plate.id,
       identity,
-      getToken: () => (filmActor ? "haw-fill-floor" : readToken()),
+      getToken: () => readToken(),
       getPose: () => playerCtl?.pose() ?? youAvatar,
       onWelcome: (peers, self, claims, mineBlocked, mineBlockedBy, officeAds, floor, openMax, floors, xp) => {
         if (mineBlocked?.length) {
@@ -1983,7 +1993,7 @@ loadPlate()
       claimShiftDesk.textContent = desks.pretty(desk);
       claimShift.hidden = false;
     };
-    if (wantFilm) window.hawOpenClaim = (deskId) => {
+    openFilmClaim = (deskId) => {
       const desk = desks.get(deskId);
       if (desk) showClaimShift(desk);
     };
@@ -2151,7 +2161,6 @@ loadPlate()
       macCtl?.setCompany(identity.company ?? "");
       macCtl?.setProfileUrl(identity.profileUrl ?? "");
       macCtl?.setAccount(identity.email);
-      if (filmActor) macCtl?.setAccount("ash@humansat.work");
     };
 
     const becomeSignedIn = async (
@@ -2191,6 +2200,7 @@ loadPlate()
         macCtl?.setOfficeAd({ enabled: officeAdState.enabled, previewUrl: officeAdState.url });
       }
       room.identify();
+      await enableFilm(token);
       await worldChat?.reconnect(wallet.identity, wallet.address);
       releaseGuestHold();
     };
@@ -2370,6 +2380,7 @@ loadPlate()
       macCtl?.setOfficeAd({ enabled: false, previewUrl: null });
       identity.email = undefined;
       saveIdentity(identity);
+      disarmFilm();
       guest = await ensureGuestWallet(identity.id);
       identity.address = guest.address;
       paintSelf();
@@ -2534,12 +2545,6 @@ loadPlate()
       officeAd: {
         get: () => ({ enabled: officeAdState.enabled, previewUrl: officeAdState.url }),
         setEnabled: async (on) => {
-          if (filmActor) {
-            officeAdState = { ...officeAdState, enabled: on };
-            mac.setOfficeAd({ enabled: on, previewUrl: officeAdState.url });
-            paintOwnOfficeAd();
-            return;
-          }
           if (!isSignedIn()) {
             askAccount("Sign in to set a window ad.");
             mac.setOfficeAd({ enabled: officeAdState.enabled, previewUrl: officeAdState.url });
@@ -2556,22 +2561,6 @@ loadPlate()
           room.sendOfficeAd(officeAdState.enabled);
         },
         setImage: async (file) => {
-          if (filmActor) {
-            try {
-              const packed = await compressOfficeAd(file);
-              officeAdState = {
-                enabled: true,
-                hasImage: true,
-                rev: (officeAdState.rev || 0) + 1,
-                url: packed.dataUrl,
-              };
-              mac.setOfficeAd({ enabled: true, previewUrl: packed.dataUrl });
-              paintOwnOfficeAd();
-              return { ok: true, previewUrl: packed.dataUrl };
-            } catch (err) {
-              return { ok: false, error: err instanceof Error ? err.message : "Couldn't save." };
-            }
-          }
           if (!isSignedIn()) {
             askAccount("Sign in to set a window ad.");
             return { ok: false, error: "Sign in first." };
@@ -2628,7 +2617,6 @@ loadPlate()
       },
     });
     macCtl = mac;
-    if (filmActor) macCtl.setAccount("ash@humansat.work");
     paintFloorRoster();
     worldChat = connectWorldChat({
       identity,
@@ -2956,11 +2944,11 @@ function tick(render: boolean) {
   simulate(dt);
   if (!render) return;
   resize();
-  if (livePlate && filmFollow === "_self" && playerCtl) {
+  if (filmArmed && livePlate && filmFollow === "_self" && playerCtl) {
     const pose = playerCtl.pose();
     const [wx, , wz] = toWorld(pose.x, pose.y, livePlate);
     centerCameraOn(wx, wz);
-  } else if (livePlate && filmFollow) {
+  } else if (filmArmed && livePlate && filmFollow) {
     const peer = remotesCtl?.poses().find((row) => row.name.toLowerCase() === filmFollow.toLowerCase());
     if (peer) {
       const [wx, , wz] = toWorld(peer.x, peer.y, livePlate);

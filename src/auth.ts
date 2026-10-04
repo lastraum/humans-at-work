@@ -105,6 +105,22 @@ export async function restoreAccount(): Promise<{
   };
 }
 
+export type FilmShot = {
+  x: number;
+  y: number;
+  zoom: number;
+  film?: "hide" | "chat" | "hud";
+  look?: "w" | "e" | "s" | "n";
+};
+
+/** Admin allowlist check. Shots are omitted unless this session is listed in ADMIN_EMAILS. */
+export async function fetchFilmGrant(token: string): Promise<Record<string, FilmShot> | null> {
+  if (!token) return null;
+  const data = await authFetch<{ shots?: Record<string, FilmShot> }>("/__auth/film", { token });
+  if (!data.ok || !data.shots) return null;
+  return data.shots;
+}
+
 export async function startEmailCode(email: string) {
   return authFetch<{ mailed: boolean; devCode?: string }>("/__auth/email/start", {
     method: "POST",

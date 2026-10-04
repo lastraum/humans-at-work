@@ -1,5 +1,5 @@
 server {
-    server_name humansat.work www.humansat.work humans.lastslice.co www.humans.lastslice.co;
+    server_name humansat.work www.humansat.work;
     client_max_body_size 2M;
     root /var/www/humansat-work;
 

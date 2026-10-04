@@ -8,6 +8,7 @@ import { clientIp, isDirectLoopback } from "./net";
 import { clampLook, type AvatarLook } from "../src/avatarLook";
 import { MAX_ID, MAX_NAME, clampCompany, clampProfileUrl } from "../src/protocol";
 import { bankMinutes } from "../src/xp";
+import { FILM_SHOTS } from "./film";
 
 const AUTH_PREFIX = "/__auth";
 const OFFICE_ADS_PREFIX = "/__office-ads";
@@ -534,7 +535,24 @@ function envOf(mode: string) {
     googleClientId: env.GOOGLE_CLIENT_ID || env.VITE_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || "",
     resendKey: env.RESEND_API_KEY || process.env.RESEND_API_KEY || "",
     from: env.AUTH_FROM || env.RESEND_FROM || process.env.AUTH_FROM || process.env.RESEND_FROM || "Humans at Work <onboarding@resend.dev>",
+    adminEmails: env.ADMIN_EMAILS || process.env.ADMIN_EMAILS || "",
   };
+}
+
+function adminEmailSet(raw: string) {
+  const set = new Set<string>();
+  for (const part of raw.split(/[,;\s]+/)) {
+    const email = normalizeEmail(part);
+    if (email) set.add(email);
+  }
+  return set;
+}
+
+/** Empty ADMIN_EMAILS disables film tools. */
+function isAdminEmail(email: string, raw: string) {
+  const allow = adminEmailSet(raw);
+  if (!allow.size) return false;
+  return allow.has(email);
 }
 
 async function sendCodeEmail(to: string, code: string, env: ReturnType<typeof envOf>) {
@@ -636,7 +654,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
       address: found.session.address ?? null,
       blocked: found.user.blocked ?? [],
       officeAd: publicOfficeAd(found.user),
+      admin: isAdminEmail(found.user.email, env.adminEmails),
     });
+    return;
+  }
+
+  if (pathname === `${AUTH_PREFIX}/film` && method === "GET") {
+    const found = await withStore((store) => sessionOf(store, bearer(req)));
+    if (!found) {
+      json(res, 401, { ok: false, error: "signed out" });
+      return;
+    }
+    if (!isAdminEmail(found.user.email, env.adminEmails)) {
+      json(res, 403, { ok: false, error: "film disabled" });
+      return;
+    }
+    json(res, 200, { ok: true, shots: FILM_SHOTS });
     return;
   }
 

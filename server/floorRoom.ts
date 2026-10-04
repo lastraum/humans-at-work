@@ -89,10 +89,8 @@ function loadDeskFootprints(): {
       rows: Number(desk.rows) || 1,
     }));
     const officeIds = offices.map((desk) => String(desk.id)).filter(Boolean);
-    const fixtureIds = (raw.avatars ?? [])
-      .map((avatar) => String(avatar.officeId ?? ""))
-      .filter((id) => id && officeIds.includes(id));
-    return { cell, desks, officeIds, fixtureIds };
+    // Plate avatars are not occupants. Floor 2 opens only from real claims.
+    return { cell, desks, officeIds, fixtureIds: [] as string[] };
   } catch {
     return { cell: 179, desks: [], officeIds: [], fixtureIds: [] };
   }
