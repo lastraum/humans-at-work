@@ -1,4 +1,6 @@
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { AvatarLook } from "./avatarLook";
+import { enabledAuthProviders, type AuthProvider } from "./authProviders";
 
 const TOKEN_KEY = "haw-session-token";
 
@@ -10,6 +12,7 @@ export type AuthUser = {
   company?: string;
   profileUrl?: string;
   look?: AvatarLook;
+  avatarUrl?: string;
 };
 
 export type OfficeAdProfile = {
@@ -20,8 +23,7 @@ export type OfficeAdProfile = {
 };
 
 export type AuthConfig = {
-  googleClientId: string | null;
-  mailer: boolean;
+  providers: AuthProvider[];
 };
 
 type Ok<T> = { ok: true } & T;
@@ -66,13 +68,83 @@ export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
 }
 
-export async function fetchAuthConfig(): Promise<AuthConfig> {
-  const data = await authFetch<AuthConfig>("/__auth/config");
-  if (!data.ok) return { googleClientId: null, mailer: false };
-  return {
-    googleClientId: data.googleClientId ?? null,
-    mailer: Boolean(data.mailer),
-  };
+export function clientAuthProviders(): AuthProvider[] {
+  const url = import.meta.env.VITE_SUPABASE_URL;
+  const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !key) return [];
+  return enabledAuthProviders(import.meta.env.VITE_AUTH_PROVIDERS);
+}
+
+/** Where Supabase sends the browser after Google, X, Discord, or Slack. */
+export function oauthRedirectTo() {
+  return `${location.origin}/`;
+}
+
+let supabaseClient: SupabaseClient | null | undefined;
+
+function getSupabase() {
+  if (supabaseClient !== undefined) return supabaseClient;
+  const url = import.meta.env.VITE_SUPABASE_URL;
+  const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !key) {
+    supabaseClient = null;
+    return null;
+  }
+  supabaseClient = createClient(url, key, {
+    auth: {
+      flowType: "pkce",
+      detectSessionInUrl: false,
+      persistSession: true,
+      autoRefreshToken: false,
+    },
+  });
+  return supabaseClient;
+}
+
+export async function startOAuth(provider: AuthProvider): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = getSupabase();
+  if (!supabase) return { ok: false, error: "Sign-in isn't configured." };
+  const { error } = await supabase.auth.signInWithOAuth({
+    provider,
+    options: { redirectTo: oauthRedirectTo() },
+  });
+  if (error) return { ok: false, error: error.message || "Sign-in failed." };
+  return { ok: true };
+}
+
+/** Exchange a returning `?code=` for an app session. Returns an error string, or null. */
+export async function finishOAuthRedirect(profile?: {
+  guestId?: string;
+  name?: string;
+  color?: string;
+  look?: AvatarLook;
+}): Promise<string | null> {
+  const params = new URLSearchParams(location.search);
+  const code = params.get("code");
+  const oauthError = params.get("error_description") || params.get("error");
+  if (!code && !oauthError) return null;
+  params.delete("code");
+  params.delete("state");
+  params.delete("error");
+  params.delete("error_code");
+  params.delete("error_description");
+  const next = `${location.pathname}${params.toString() ? `?${params}` : ""}${location.hash}`;
+  history.replaceState(null, "", next);
+  if (!code) return (oauthError || "Sign-in failed.").slice(0, 180);
+  const supabase = getSupabase();
+  if (!supabase) return "Sign-in isn't configured.";
+  const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+  if (error || !data.session?.access_token) return (error?.message || "Sign-in failed.").slice(0, 180);
+  const minted = await loginWithSupabase({
+    accessToken: data.session.access_token,
+    guestId: profile?.guestId,
+    name: profile?.name,
+    color: profile?.color,
+    look: profile?.look,
+  });
+  await supabase.auth.signOut().catch(() => undefined);
+  if (!minted.ok) return minted.error || "Sign-in failed.";
+  return null;
 }
 
 export async function restoreAccount(): Promise<{
@@ -121,37 +193,14 @@ export async function fetchFilmGrant(token: string): Promise<Record<string, Film
   return data.shots;
 }
 
-export async function startEmailCode(email: string) {
-  return authFetch<{ mailed: boolean; devCode?: string }>("/__auth/email/start", {
-    method: "POST",
-    body: { email },
-  });
-}
-
-export async function verifyEmailCode(opts: {
-  email: string;
-  code: string;
-  guestId: string;
-  name: string;
-  color: string;
+export async function loginWithSupabase(opts: {
+  accessToken: string;
+  guestId?: string;
+  name?: string;
+  color?: string;
   look?: AvatarLook;
 }) {
-  const data = await authFetch<{ token: string; user: AuthUser }>("/__auth/email/verify", {
-    method: "POST",
-    body: opts,
-  });
-  if (data.ok) writeToken(data.token);
-  return data;
-}
-
-export async function loginWithGoogle(opts: {
-  credential: string;
-  guestId: string;
-  name: string;
-  color: string;
-  look?: AvatarLook;
-}) {
-  const data = await authFetch<{ token: string; user: AuthUser }>("/__auth/google", {
+  const data = await authFetch<{ token: string; user: AuthUser }>("/__auth/supabase", {
     method: "POST",
     body: opts,
   });

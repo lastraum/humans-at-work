@@ -197,20 +197,12 @@
           </div>
           <div id="mac-account-out">
             <p class="mac-hint">You're on the clock as a guest for five minutes. Sign in to keep going and take an office.</p>
-            <label class="mac-field">Email
-              <input id="mac-email" type="email" autocomplete="username" spellcheck="false" />
-            </label>
-            <button type="button" id="mac-email-send">Email me a code</button>
-            <div id="mac-email-code-wrap" hidden>
-              <label class="mac-field">Code
-                <input id="mac-email-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" />
-              </label>
-              <button type="button" id="mac-email-verify">Sign in</button>
-            </div>
             <p id="mac-auth-hint" class="mac-hint"></p>
-            <div id="mac-google-wrap" hidden>
-              <p class="mac-or">or</p>
-              <div id="mac-google"></div>
+            <div class="auth-providers">
+              <button type="button" class="auth-provider" data-provider="google">Continue with Google</button>
+              <button type="button" class="auth-provider" data-provider="x">Continue with X</button>
+              <button type="button" class="auth-provider" data-provider="discord">Continue with Discord</button>
+              <button type="button" class="auth-provider" data-provider="slack_oidc">Continue with Slack</button>
             </div>
           </div>
         </div>
@@ -338,20 +330,12 @@
             <button type="button" id="join-signin" disabled>Sign in</button>
           </div>
           <div id="join-auth" hidden>
-            <label class="mac-field">Email
-              <input id="join-email" type="email" autocomplete="username" spellcheck="false" />
-            </label>
-            <button type="button" id="join-email-send">Email me a code</button>
-            <div id="join-email-code-wrap" hidden>
-              <label class="mac-field">Code
-                <input id="join-email-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" />
-              </label>
-              <button type="button" id="join-email-verify">Sign in</button>
-            </div>
             <p id="join-auth-hint" class="mac-hint"></p>
-            <div id="join-google-wrap" hidden>
-              <p class="mac-or">or</p>
-              <div id="join-google"></div>
+            <div class="auth-providers">
+              <button type="button" class="auth-provider" data-provider="google">Continue with Google</button>
+              <button type="button" class="auth-provider" data-provider="x">Continue with X</button>
+              <button type="button" class="auth-provider" data-provider="discord">Continue with Discord</button>
+              <button type="button" class="auth-provider" data-provider="slack_oidc">Continue with Slack</button>
             </div>
             <button type="button" id="join-back">Back</button>
           </div>
@@ -479,20 +463,12 @@
             <button type="button" id="guest-over-leave">Leave</button>
           </div>
           <div id="guest-over-auth" hidden>
-            <label class="mac-field">Email
-              <input id="guest-over-email" type="email" autocomplete="username" spellcheck="false" />
-            </label>
-            <button type="button" id="guest-over-email-send">Email me a code</button>
-            <div id="guest-over-code-wrap" hidden>
-              <label class="mac-field">Code
-                <input id="guest-over-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" />
-              </label>
-              <button type="button" id="guest-over-verify">Sign in</button>
-            </div>
             <p id="guest-over-hint" class="mac-hint"></p>
-            <div id="guest-over-google-wrap" hidden>
-              <p class="mac-or">or</p>
-              <div id="guest-over-google"></div>
+            <div class="auth-providers">
+              <button type="button" class="auth-provider" data-provider="google">Continue with Google</button>
+              <button type="button" class="auth-provider" data-provider="x">Continue with X</button>
+              <button type="button" class="auth-provider" data-provider="discord">Continue with Discord</button>
+              <button type="button" class="auth-provider" data-provider="slack_oidc">Continue with Slack</button>
             </div>
             <button type="button" id="guest-over-back">Back</button>
           </div>

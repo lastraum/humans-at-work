@@ -21,22 +21,22 @@ import { FIRST_FLOOR, floorName } from "./floors";
 import { elevatorSpawn, ensureGridDefaults, inElevator, sidewalkSpawn, spreadConferenceFurniture, syncGridDerived } from "./grid";
 import {
   bindSessionWallet,
-  fetchAuthConfig,
-  fetchOfficeAd,
-  loginWithGoogle,
-  logoutAccount,
+  clientAuthProviders,
   fetchFilmGrant,
+  fetchOfficeAd,
+  finishOAuthRedirect,
+  logoutAccount,
   readToken,
   restoreAccount,
-  type FilmShot,
   saveAccountName,
   saveAccountProfile,
   saveBlock,
   saveOfficeAd,
-  startEmailCode,
-  verifyEmailCode,
+  startOAuth,
+  type FilmShot,
   type OfficeAdProfile,
 } from "./auth";
+import type { AuthProvider } from "./authProviders";
 import { dropSessionWallet, ensureGuestWallet, ensureSessionWallet } from "./dcl/guestWallet";
 import { DCL_WORLD } from "./dcl/worldHandshake";
 import { addBlocked, readBlocked, removeBlocked, writeBlocked } from "./blocks";
@@ -535,6 +535,16 @@ loadPlate()
     });
     editor.setEnabled(false);
 
+    const authProviders = clientAuthProviders();
+    const returning = new URLSearchParams(location.search);
+    const oauthBack =
+      returning.has("code") || returning.has("error") || returning.has("error_description");
+    const early = oauthBack ? ensureIdentity() : null;
+    const oauthError = await finishOAuthRedirect(
+      early
+        ? { guestId: early.id, name: early.name, color: early.color, look: early.look }
+        : undefined,
+    );
     let session = await restoreAccount();
     if (!session) clearAccountEmail();
     const identity = session ? applyAccount(session.user) : ensureIdentity();
@@ -546,12 +556,12 @@ loadPlate()
     if (session && guest.address !== session.address) {
       void bindSessionWallet(guest.address);
     }
-    const authConfig = await fetchAuthConfig();
     blocked = new Set(session?.blocked?.length ? session.blocked : readBlocked());
     writeBlocked([...blocked]);
     selfId = identity.id;
     selfName = identity.name;
-    selfSignedIn = Boolean(identity.email);
+    selfSignedIn = Boolean(session);
+    identity.signedIn = selfSignedIn;
     let officeAdState: OfficeAdProfile = session?.officeAd ?? {
       enabled: false,
       hasImage: false,
@@ -597,7 +607,8 @@ loadPlate()
       const look = clampLook(user.look) ?? identity.look;
       identity.id = user.id;
       identity.name = sanitizeName(user.name) || identity.name;
-      identity.email = user.email;
+      identity.email = user.email || undefined;
+      identity.signedIn = true;
       identity.company = user.company;
       identity.profileUrl = user.profileUrl;
       identity.look = look;
@@ -679,7 +690,7 @@ loadPlate()
       return ids;
     };
 
-    const isSignedIn = () => Boolean(identity.email);
+    const isSignedIn = () => Boolean(session);
     const askAccount = (reason: string) => {
       macCtl?.askSignIn(reason);
       status.textContent = reason;
@@ -856,58 +867,31 @@ loadPlate()
     const joinGuest = document.querySelector<HTMLButtonElement>("#join-guest")!;
     const joinSignin = document.querySelector<HTMLButtonElement>("#join-signin")!;
     const joinBack = document.querySelector<HTMLButtonElement>("#join-back")!;
-    const joinEmail = document.querySelector<HTMLInputElement>("#join-email")!;
-    const joinEmailSend = document.querySelector<HTMLButtonElement>("#join-email-send")!;
-    const joinCodeWrap = document.querySelector<HTMLElement>("#join-email-code-wrap")!;
-    const joinCode = document.querySelector<HTMLInputElement>("#join-email-code")!;
-    const joinVerify = document.querySelector<HTMLButtonElement>("#join-email-verify")!;
     const joinHint = document.querySelector<HTMLElement>("#join-auth-hint")!;
-    const joinGoogleWrap = document.querySelector<HTMLElement>("#join-google-wrap")!;
-    const joinGoogle = document.querySelector<HTMLElement>("#join-google")!;
 
     const setJoinHint = (text: string) => {
       joinHint.textContent = text;
     };
 
-    const loadJoinGoogle = (onCredential: (cred: string) => void) => {
-      const clientId = authConfig.googleClientId;
-      if (!clientId || !joinGoogle) return;
-      const render = () => {
-        const gsi = window.google?.accounts?.id;
-        if (!gsi) return;
-        gsi.initialize({
-          client_id: clientId,
-          callback: (response) => onCredential(response.credential),
-          auto_select: false,
-          cancel_on_tap_outside: true,
+    const wireAuthProviders = (root: ParentNode, setHint: (text: string) => void) => {
+      const allowed = new Set(authProviders);
+      for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>("[data-provider]"))) {
+        const provider = button.dataset.provider as AuthProvider | undefined;
+        const shown = Boolean(provider && allowed.has(provider));
+        button.hidden = !shown;
+        if (!shown || !provider) continue;
+        button.addEventListener("click", () => {
+          button.disabled = true;
+          setHint("Redirecting…");
+          void startOAuth(provider).then((result) => {
+            if (result.ok) return;
+            button.disabled = false;
+            setHint(result.error);
+          });
         });
-        joinGoogle.replaceChildren();
-        gsi.renderButton(joinGoogle, {
-          type: "standard",
-          theme: "outline",
-          size: "medium",
-          text: "continue_with",
-          width: 320,
-        });
-        joinGoogleWrap.hidden = false;
-      };
-      if (window.google?.accounts?.id) {
-        render();
-        return;
       }
-      const existing = document.querySelector<HTMLScriptElement>("script[data-gsi]");
-      if (existing) {
-        existing.addEventListener("load", render, { once: true });
-        return;
-      }
-      const script = document.createElement("script");
-      script.src = "https://accounts.google.com/gsi/client";
-      script.async = true;
-      script.defer = true;
-      script.dataset.gsi = "1";
-      script.addEventListener("load", render, { once: true });
-      document.head.appendChild(script);
     };
+    wireAuthProviders(joinAuth, setJoinHint);
 
     let parkedOutside = false;
     let linkClockHeld = false;
@@ -1071,6 +1055,7 @@ loadPlate()
             clearAccountEmail();
             session = null;
             identity.email = undefined;
+            identity.signedIn = false;
             saveIdentity(identity);
             guest = await ensureGuestWallet(identity.id);
             identity.address = guest.address;
@@ -1096,102 +1081,13 @@ loadPlate()
         joinSignin.disabled = false;
         joinSignin.addEventListener("click", () => {
           showAuth(true);
-          loadJoinGoogle((credential) => {
-            setJoinHint("Signing in…");
-            void loginWithGoogle({
-              credential,
-              guestId: identity.id,
-              name: identity.name,
-              color: identity.color,
-              look: wornLook(),
-            }).then(async (result) => {
-              if (!result.ok) {
-                setJoinHint(result.error || "Google sign-in failed");
-                return;
-              }
-              const wallet = await ensureSessionWallet(result.token, true);
-              await bindSessionWallet(wallet.address);
-              guest = wallet;
-              adoptUser(result.user);
-              identity.address = wallet.address;
-              session = {
-                user: result.user,
-                token: result.token,
-                address: wallet.address,
-                blocked: [...blocked],
-                officeAd: officeAdState,
-              };
-              selfId = identity.id;
-              selfName = identity.name;
-              selfSignedIn = true;
-              await enableFilm(result.token);
-              finish();
-              identifyRoom?.();
-            });
-          });
+          if (!authProviders.length) setJoinHint("Sign-in isn't configured.");
         });
         joinBack.addEventListener("click", () => showAuth(false));
-        joinEmailSend.addEventListener("click", () => {
-          const email = joinEmail.value.trim();
-          if (!email) {
-            setJoinHint("Enter your email.");
-            return;
-          }
-          joinEmailSend.disabled = true;
-          setJoinHint("Sending code…");
-          void startEmailCode(email).then((result) => {
-            joinEmailSend.disabled = false;
-            if (!result.ok) {
-              setJoinHint(result.error || "Couldn't send a code.");
-              return;
-            }
-            joinCodeWrap.hidden = false;
-            setJoinHint(result.devCode ? `Dev code: ${result.devCode}` : "Check your email for a code.");
-            joinCode.focus();
-          });
-        });
-        joinVerify.addEventListener("click", () => {
-          const email = joinEmail.value.trim();
-          const code = joinCode.value.trim();
-          if (!email || !code) {
-            setJoinHint("Enter the code from your email.");
-            return;
-          }
-          joinVerify.disabled = true;
-          setJoinHint("Signing in…");
-          void verifyEmailCode({
-            email,
-            code,
-            guestId: identity.id,
-            name: identity.name,
-            color: identity.color,
-            look: wornLook(),
-          }).then(async (result) => {
-            joinVerify.disabled = false;
-            if (!result.ok) {
-              setJoinHint(result.error || "Couldn't sign in.");
-              return;
-            }
-            const wallet = await ensureSessionWallet(result.token, true);
-            await bindSessionWallet(wallet.address);
-            guest = wallet;
-            adoptUser(result.user);
-            identity.address = wallet.address;
-            session = {
-              user: result.user,
-              token: result.token,
-              address: wallet.address,
-              blocked: [...blocked],
-              officeAd: officeAdState,
-            };
-            selfId = identity.id;
-            selfName = identity.name;
-            selfSignedIn = true;
-            await enableFilm(result.token);
-            finish();
-            identifyRoom?.();
-          });
-        });
+        if (oauthError) {
+          showAuth(true);
+          setJoinHint(oauthError);
+        }
       }
     });
 
@@ -2150,7 +2046,8 @@ loadPlate()
     const paintSelf = () => {
       selfId = identity.id;
       selfName = identity.name;
-      selfSignedIn = Boolean(identity.email);
+      selfSignedIn = Boolean(session);
+      identity.signedIn = selfSignedIn;
       youAvatar.id = identity.id;
       youAvatar.name = identity.name;
       youAvatar.color = identity.color;
@@ -2160,7 +2057,7 @@ loadPlate()
       macCtl?.setName(identity.name);
       macCtl?.setCompany(identity.company ?? "");
       macCtl?.setProfileUrl(identity.profileUrl ?? "");
-      macCtl?.setAccount(identity.email);
+      macCtl?.setAccount(selfSignedIn ? identity.email || identity.name : undefined);
     };
 
     const becomeSignedIn = async (
@@ -2205,14 +2102,7 @@ loadPlate()
       releaseGuestHold();
     };
 
-    const guestEmail = document.querySelector<HTMLInputElement>("#guest-over-email")!;
-    const guestEmailSend = document.querySelector<HTMLButtonElement>("#guest-over-email-send")!;
-    const guestCodeWrap = document.querySelector<HTMLElement>("#guest-over-code-wrap")!;
-    const guestCode = document.querySelector<HTMLInputElement>("#guest-over-code")!;
-    const guestVerify = document.querySelector<HTMLButtonElement>("#guest-over-verify")!;
     const guestHint = document.querySelector<HTMLElement>("#guest-over-hint")!;
-    const guestGoogleWrap = document.querySelector<HTMLElement>("#guest-over-google-wrap")!;
-    const guestGoogle = document.querySelector<HTMLElement>("#guest-over-google")!;
     const setGuestHint = (text: string) => {
       guestHint.textContent = text;
     };
@@ -2220,62 +2110,7 @@ loadPlate()
       guestOverActions.hidden = on;
       guestOverAuth.hidden = !on;
     };
-    let guestGoogleReady = false;
-    const loadGuestGoogle = () => {
-      const clientId = authConfig.googleClientId;
-      if (!clientId || guestGoogleReady) return;
-      const render = () => {
-        const gsi = window.google?.accounts?.id;
-        if (!gsi) return;
-        gsi.initialize({
-          client_id: clientId,
-          callback: (response) => {
-            setGuestHint("Signing in…");
-            void loginWithGoogle({
-              credential: response.credential,
-              guestId: identity.id,
-              name: identity.name,
-              color: identity.color,
-              look: wornLook(),
-            }).then(async (result) => {
-              if (!result.ok) {
-                setGuestHint(result.error || "Google sign-in failed");
-                return;
-              }
-              await becomeSignedIn(result.user, result.token);
-            });
-          },
-          auto_select: false,
-          cancel_on_tap_outside: true,
-        });
-        guestGoogle.replaceChildren();
-        gsi.renderButton(guestGoogle, {
-          type: "standard",
-          theme: "outline",
-          size: "medium",
-          text: "continue_with",
-          width: 320,
-        });
-        guestGoogleWrap.hidden = false;
-        guestGoogleReady = true;
-      };
-      if (window.google?.accounts?.id) {
-        render();
-        return;
-      }
-      const existing = document.querySelector<HTMLScriptElement>("script[data-gsi]");
-      if (existing) {
-        existing.addEventListener("load", render, { once: true });
-        return;
-      }
-      const script = document.createElement("script");
-      script.src = "https://accounts.google.com/gsi/client";
-      script.async = true;
-      script.defer = true;
-      script.dataset.gsi = "1";
-      script.addEventListener("load", render, { once: true });
-      document.head.appendChild(script);
-    };
+    wireAuthProviders(guestOverAuth, setGuestHint);
 
     holdGuestShift = () => {
       if (guestShiftHeld || isSignedIn() || parkedOutside) return;
@@ -2309,55 +2144,10 @@ loadPlate()
     };
     document.querySelector("#guest-over-signin")?.addEventListener("click", () => {
       showGuestAuth(true);
-      loadGuestGoogle();
-      guestEmail.focus();
+      if (!authProviders.length) setGuestHint("Sign-in isn't configured.");
     });
     document.querySelector("#guest-over-back")?.addEventListener("click", () => showGuestAuth(false));
     document.querySelector("#guest-over-leave")?.addEventListener("click", () => clockOut?.(true));
-    guestEmailSend.addEventListener("click", () => {
-      const email = guestEmail.value.trim();
-      if (!email) {
-        setGuestHint("Enter your email.");
-        return;
-      }
-      guestEmailSend.disabled = true;
-      setGuestHint("Sending code…");
-      void startEmailCode(email).then((result) => {
-        guestEmailSend.disabled = false;
-        if (!result.ok) {
-          setGuestHint(result.error || "Couldn't send a code.");
-          return;
-        }
-        guestCodeWrap.hidden = false;
-        setGuestHint(result.devCode ? `Dev code: ${result.devCode}` : "Check your email for a code.");
-        guestCode.focus();
-      });
-    });
-    guestVerify.addEventListener("click", () => {
-      const email = guestEmail.value.trim();
-      const code = guestCode.value.trim();
-      if (!email || !code) {
-        setGuestHint("Enter the code from your email.");
-        return;
-      }
-      guestVerify.disabled = true;
-      setGuestHint("Signing in…");
-      void verifyEmailCode({
-        email,
-        code,
-        guestId: identity.id,
-        name: identity.name,
-        color: identity.color,
-        look: wornLook(),
-      }).then(async (result) => {
-        guestVerify.disabled = false;
-        if (!result.ok) {
-          setGuestHint(result.error || "Couldn't sign in.");
-          return;
-        }
-        await becomeSignedIn(result.user, result.token);
-      });
-    });
 
     const becomeGuest = async () => {
       room.sendWhisperEnd();
@@ -2379,6 +2169,7 @@ loadPlate()
       officeAdState = { enabled: false, hasImage: false, rev: 0 };
       macCtl?.setOfficeAd({ enabled: false, previewUrl: null });
       identity.email = undefined;
+      identity.signedIn = false;
       saveIdentity(identity);
       disarmFilm();
       guest = await ensureGuestWallet(identity.id);
@@ -2402,7 +2193,7 @@ loadPlate()
         saveIdentity(identity);
         showLook();
         room.sendProfile(identity.name, identity.company ?? "", identity.profileUrl ?? "", next);
-        if (!identity.email) return;
+        if (!isSignedIn()) return;
         void saveAccountProfile({
           name: identity.name,
           company: identity.company,
@@ -2422,7 +2213,7 @@ loadPlate()
         mac.setName(name);
         mac.renameSpeaker(identity.id, name);
         worldChat?.setName(name);
-        if (!identity.email) return true;
+        if (!isSignedIn()) return true;
         const saved = await saveAccountName(name);
         return saved.ok;
       },
@@ -2452,7 +2243,7 @@ loadPlate()
         mac.renameSpeaker(identity.id, name);
         worldChat?.setName(name);
         paintFloorRoster();
-        if (!identity.email) return true;
+        if (!isSignedIn()) return true;
         const saved = await saveAccountProfile({
           name,
           company,
@@ -2584,33 +2375,8 @@ loadPlate()
       },
       auth: {
         email: identity.email,
-        googleClientId: authConfig.googleClientId,
-        onEmailStart: (email) => startEmailCode(email),
-        onEmailVerify: async (email, code) => {
-          const result = await verifyEmailCode({
-            email,
-            code,
-            guestId: identity.id,
-            name: identity.name,
-            color: identity.color,
-            look: wornLook(),
-          });
-          if (!result.ok) return result;
-          await becomeSignedIn(result.user, result.token);
-          return result;
-        },
-        onGoogle: async (credential) => {
-          const result = await loginWithGoogle({
-            credential,
-            guestId: identity.id,
-            name: identity.name,
-            color: identity.color,
-            look: wornLook(),
-          });
-          if (!result.ok) return result;
-          await becomeSignedIn(result.user, result.token);
-          return result;
-        },
+        providers: authProviders,
+        onProvider: (provider) => startOAuth(provider),
         onLogout: async () => {
           await becomeGuest();
         },

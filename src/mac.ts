@@ -1,3 +1,4 @@
+import type { AuthProvider } from "./authProviders";
 import { LOOK_PARTS, randomLook, type AvatarLook, type LookPart } from "./avatarLook";
 import type { ChatChannel, Privacy } from "./protocol";
 import { timezoneLabel } from "./conferenceReserve";
@@ -17,10 +18,8 @@ type InboxItem = {
 
 export type MacAuth = {
   email?: string;
-  googleClientId?: string | null;
-  onEmailStart: (email: string) => Promise<{ ok: boolean; error?: string; devCode?: string; mailed?: boolean }>;
-  onEmailVerify: (email: string, code: string) => Promise<{ ok: boolean; error?: string }>;
-  onGoogle: (credential: string) => Promise<{ ok: boolean; error?: string }>;
+  providers: AuthProvider[];
+  onProvider: (provider: AuthProvider) => Promise<{ ok: boolean; error?: string }>;
   onLogout: () => Promise<void>;
 };
 
@@ -261,16 +260,8 @@ export function attachMac(opts: {
   const accountIn = root.querySelector<HTMLElement>("#mac-account-in");
   const accountOut = root.querySelector<HTMLElement>("#mac-account-out");
   const accountEmail = root.querySelector<HTMLElement>("#mac-account-email");
-  const emailInput = root.querySelector<HTMLInputElement>("#mac-email");
-  const emailSend = root.querySelector<HTMLButtonElement>("#mac-email-send");
-  const emailCodeWrap = root.querySelector<HTMLElement>("#mac-email-code-wrap");
-  const emailCode = root.querySelector<HTMLInputElement>("#mac-email-code");
-  const emailVerify = root.querySelector<HTMLButtonElement>("#mac-email-verify");
   const authHint = root.querySelector<HTMLElement>("#mac-auth-hint");
-  const googleWrap = root.querySelector<HTMLElement>("#mac-google-wrap");
-  const googleHost = root.querySelector<HTMLElement>("#mac-google");
   const logoutBtn = root.querySelector<HTMLButtonElement>("#mac-logout");
-  let googleReady = false;
 
   const setAuthHint = (text: string) => {
     if (authHint) authHint.textContent = text;
@@ -288,52 +279,6 @@ export function attachMac(opts: {
     if (accountOut) accountOut.hidden = signedIn;
     if (accountEmail) accountEmail.textContent = email ?? "";
     if (signedIn) setAuthHint("");
-  };
-
-  const loadGoogle = () => {
-    const clientId = opts.auth?.googleClientId;
-    if (!clientId || !googleHost || googleReady) return;
-    const render = () => {
-      const gsi = window.google?.accounts?.id;
-      if (!gsi) return;
-      gsi.initialize({
-        client_id: clientId,
-        callback: (response) => {
-          setAuthHint("Signing in…");
-          void opts.auth?.onGoogle(response.credential).then((result) => {
-            if (!result.ok) setAuthHint(result.error || "Google sign-in failed");
-          });
-        },
-        auto_select: false,
-        cancel_on_tap_outside: true,
-      });
-      googleHost.replaceChildren();
-      gsi.renderButton(googleHost, {
-        type: "standard",
-        theme: "outline",
-        size: "medium",
-        text: "continue_with",
-        width: 300,
-      });
-      googleReady = true;
-      if (googleWrap) googleWrap.hidden = false;
-    };
-    if (window.google?.accounts?.id) {
-      render();
-      return;
-    }
-    const existing = document.querySelector<HTMLScriptElement>("script[data-gsi]");
-    if (existing) {
-      existing.addEventListener("load", render, { once: true });
-      return;
-    }
-    const script = document.createElement("script");
-    script.src = "https://accounts.google.com/gsi/client";
-    script.async = true;
-    script.defer = true;
-    script.dataset.gsi = "1";
-    script.addEventListener("load", render, { once: true });
-    document.head.appendChild(script);
   };
 
   const adEnabled = root.querySelector<HTMLInputElement>("#mac-ad-enabled");
@@ -445,61 +390,24 @@ export function attachMac(opts: {
   paintOfficeAd();
 
   paintAccount(opts.auth?.email);
-  if (opts.auth?.googleClientId) {
-    if (googleWrap) googleWrap.hidden = false;
-    loadGoogle();
-  } else if (googleWrap) googleWrap.hidden = true;
-
-  emailSend?.addEventListener("click", () => {
-    const email = emailInput?.value.trim() ?? "";
-    if (!email) {
-      setAuthHint("Type your email first.");
-      return;
-    }
-    if (!opts.auth) return;
-    emailSend.disabled = true;
-    setAuthHint("Sending code…");
-    void opts.auth.onEmailStart(email).then((result) => {
-      emailSend.disabled = false;
-      if (!result.ok) {
-        setAuthHint(result.error || "Could not send code");
-        return;
-      }
-      if (emailCodeWrap) emailCodeWrap.hidden = false;
-      emailCode?.focus();
-      if (result.devCode) {
-        setAuthHint(`Dev code: ${result.devCode}`);
-      } else if (result.mailed) {
-        setAuthHint("Check your email for a 6-digit code.");
-      } else {
-        setAuthHint("Code printed in the server log.");
-      }
+  const allowedProviders = new Set(opts.auth?.providers ?? []);
+  for (const button of Array.from(accountOut?.querySelectorAll<HTMLButtonElement>("[data-provider]") ?? [])) {
+    const provider = button.dataset.provider as AuthProvider | undefined;
+    const shown = Boolean(provider && allowedProviders.has(provider));
+    button.hidden = !shown;
+    if (!shown || !provider) continue;
+    button.addEventListener("click", () => {
+      if (!opts.auth) return;
+      button.disabled = true;
+      setAuthHint("Redirecting…");
+      void opts.auth.onProvider(provider).then((result) => {
+        if (result.ok) return;
+        button.disabled = false;
+        setAuthHint(result.error || "Sign-in failed.");
+      });
     });
-  });
-  emailVerify?.addEventListener("click", () => {
-    const email = emailInput?.value.trim() ?? "";
-    const code = emailCode?.value.trim() ?? "";
-    if (!email || !code) {
-      setAuthHint("Email and code both needed.");
-      return;
-    }
-    if (!opts.auth) return;
-    emailVerify.disabled = true;
-    setAuthHint("Signing in…");
-    void opts.auth.onEmailVerify(email, code).then((result) => {
-      emailVerify.disabled = false;
-      if (!result.ok) setAuthHint(result.error || "Wrong code");
-    });
-  });
-  emailCode?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") emailVerify?.click();
-  });
-  emailInput?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      if (emailCodeWrap && !emailCodeWrap.hidden) emailVerify?.click();
-      else emailSend?.click();
-    }
-  });
+  }
+  if (opts.auth && allowedProviders.size === 0) setAuthHint("Sign-in isn't configured.");
   logoutBtn?.addEventListener("click", () => {
     logoutBtn.disabled = true;
     void opts.auth

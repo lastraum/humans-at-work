@@ -1,23 +1,33 @@
-import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Readable } from "node:stream";
 import { loadEnv, type Plugin, type PreviewServer, type ViteDevServer } from "vite";
-import { clientIp, isDirectLoopback } from "./net";
+import { enabledAuthProviders } from "../src/authProviders";
+import { clientIp } from "./net";
 import { clampLook, type AvatarLook } from "../src/avatarLook";
 import { MAX_ID, MAX_NAME, clampCompany, clampProfileUrl } from "../src/protocol";
 import { bankMinutes } from "../src/xp";
 import { FILM_SHOTS } from "./film";
+import {
+  establishSupabaseSession,
+  isAllowlistedAdmin,
+  type AccountRecord,
+  type AppSession,
+} from "./supabaseAccount";
+import {
+  getSupabaseJwks,
+  supabaseIssuer,
+  verifySupabaseAccessToken,
+  type SupabaseIdentity,
+} from "./supabaseJwt";
 
 const AUTH_PREFIX = "/__auth";
 const OFFICE_ADS_PREFIX = "/__office-ads";
 const OFFICE_AD_MAX_BYTES = 200_000;
 const OFFICE_AD_MIMES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
-const CODE_TTL_MS = 10 * 60 * 1000;
-const CODE_GAP_MS = 20 * 1000;
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const MAX_CODE_ATTEMPTS = 5;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 type User = {
@@ -26,6 +36,8 @@ type User = {
   name: string;
   color: string;
   googleSub?: string;
+  supabaseId?: string;
+  avatarUrl?: string;
   blocked?: string[];
   officeAdEnabled?: boolean;
   officeAdRev?: number;
@@ -70,7 +82,20 @@ type JsonRes = {
 };
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const storePath = resolve(rootDir, "data/accounts.json");
+const defaultStorePath = resolve(rootDir, "data/accounts.json");
+let storePath = defaultStorePath;
+
+/** Tests point the account file at a temp path. Production leaves this alone. */
+export function setAccountsStoreForTests(path: string | null) {
+  storePath = path ?? defaultStorePath;
+}
+
+let verifyForTests: ((token: string) => Promise<SupabaseIdentity>) | null = null;
+
+/** Tests skip the network and pass an already-checked Supabase identity. */
+export function setSupabaseVerifierForTests(fn: ((token: string) => Promise<SupabaseIdentity>) | null) {
+  verifyForTests = fn;
+}
 const adsDir = resolve(rootDir, "data/office-ads");
 
 let queue: Promise<unknown> = Promise.resolve();
@@ -195,27 +220,11 @@ function clampColor(value: unknown) {
   return /^#[0-9a-fA-F]{6}$/.test(color) ? color.toLowerCase() : "";
 }
 
-function clampGuestId(value: unknown) {
-  const id = String(value ?? "").slice(0, MAX_ID);
-  return /^[A-Za-z0-9._:-]{8,}$/.test(id) ? id : "";
-}
-
 function normalizeAddress(value: unknown) {
   const address = String(value ?? "")
     .trim()
     .toLowerCase();
   return /^0x[a-f0-9]{40}$/.test(address) ? address : "";
-}
-
-function hashCode(secret: string, email: string, code: string) {
-  return createHash("sha256").update(`${secret}:${email}:${code}`).digest("hex");
-}
-
-function safeEqual(a: string, b: string) {
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-  if (left.length !== right.length) return false;
-  return timingSafeEqual(left, right);
 }
 
 function publicUser(user: User) {
@@ -227,6 +236,7 @@ function publicUser(user: User) {
     color: look?.shirt || user.color,
     company: user.company || undefined,
     profileUrl: user.profileUrl || undefined,
+    avatarUrl: user.avatarUrl || undefined,
     look,
   };
 }
@@ -337,65 +347,6 @@ function publicOfficeAd(user: User) {
     rev,
     url: hasImage ? officeAdUrl(user.id, rev) : undefined,
   };
-}
-
-function mintSession(store: Store, user: User): Session {
-  const now = Date.now();
-  store.sessions = store.sessions.filter((row) => row.userId !== user.id);
-  const session: Session = {
-    token: randomBytes(32).toString("hex"),
-    userId: user.id,
-    createdAt: now,
-    expiresAt: now + SESSION_TTL_MS,
-  };
-  store.sessions.push(session);
-  user.lastLoginAt = now;
-  return session;
-}
-
-function findUser(store: Store, pred: (user: User) => boolean) {
-  return store.users.find(pred);
-}
-
-function upsertUser(
-  store: Store,
-  opts: {
-    email: string;
-    googleSub?: string;
-    guestId?: string;
-    name?: string;
-    color?: string;
-    look?: AvatarLook;
-  },
-): { user: User; isNew: boolean } {
-  const now = Date.now();
-  let user =
-    (opts.googleSub ? findUser(store, (row) => row.googleSub === opts.googleSub) : undefined) ??
-    findUser(store, (row) => row.email === opts.email);
-  if (user) {
-    user.email = opts.email;
-    if (opts.googleSub) user.googleSub = opts.googleSub;
-    if (!user.look && opts.look) {
-      user.look = opts.look;
-      user.color = opts.look.shirt;
-    }
-    user.lastLoginAt = now;
-    return { user, isNew: false };
-  }
-  const guestId = opts.guestId;
-  const takeGuest = Boolean(guestId && !store.users.some((row) => row.id === guestId));
-  user = {
-    id: takeGuest && guestId ? guestId : randomUUID(),
-    email: opts.email,
-    name: clampName(opts.name) || `Guest-${(guestId ?? "user").replace(/-/g, "").slice(0, 4)}`,
-    color: opts.look?.shirt || clampColor(opts.color) || "#f4a261",
-    look: opts.look,
-    googleSub: opts.googleSub,
-    createdAt: now,
-    lastLoginAt: now,
-  };
-  store.users.push(user);
-  return { user, isNew: true };
 }
 
 function sessionOf(store: Store, token: string) {
@@ -531,68 +482,20 @@ export function setUserBlock(userId: string, targetId: string, on: boolean) {
 
 function envOf(mode: string) {
   const env = loadEnv(mode, rootDir, "");
+  const providersRaw = Object.prototype.hasOwnProperty.call(env, "VITE_AUTH_PROVIDERS")
+    ? env.VITE_AUTH_PROVIDERS
+    : process.env.VITE_AUTH_PROVIDERS;
   return {
-    googleClientId: env.GOOGLE_CLIENT_ID || env.VITE_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || "",
-    resendKey: env.RESEND_API_KEY || process.env.RESEND_API_KEY || "",
-    from: env.AUTH_FROM || env.RESEND_FROM || process.env.AUTH_FROM || process.env.RESEND_FROM || "Humans at Work <onboarding@resend.dev>",
+    supabaseUrl: env.SUPABASE_URL || process.env.SUPABASE_URL || "",
+    supabaseSecret: env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SECRET_KEY || "",
     adminEmails: env.ADMIN_EMAILS || process.env.ADMIN_EMAILS || "",
+    adminIds: env.ADMIN_SUPABASE_IDS || process.env.ADMIN_SUPABASE_IDS || "",
+    providers: enabledAuthProviders(providersRaw),
   };
 }
 
-function adminEmailSet(raw: string) {
-  const set = new Set<string>();
-  for (const part of raw.split(/[,;\s]+/)) {
-    const email = normalizeEmail(part);
-    if (email) set.add(email);
-  }
-  return set;
-}
-
-/** Empty ADMIN_EMAILS disables film tools. */
-function isAdminEmail(email: string, raw: string) {
-  const allow = adminEmailSet(raw);
-  if (!allow.size) return false;
-  return allow.has(email);
-}
-
-async function sendCodeEmail(to: string, code: string, env: ReturnType<typeof envOf>) {
-  if (!env.resendKey) return false;
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.resendKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: env.from,
-      to,
-      subject: `${code} is your Humans at Work code`,
-      text: `Your sign-in code is ${code}. It expires in 10 minutes.\n`,
-    }),
-  });
-  if (!res.ok) throw new Error(`resend ${res.status}`);
-  return true;
-}
-
-async function verifyGoogle(credential: string, clientId: string) {
-  const url = `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`;
-  const res = await fetch(url);
-  const data = (await res.json().catch(() => null)) as {
-    aud?: string;
-    iss?: string;
-    email?: string;
-    email_verified?: string | boolean;
-    sub?: string;
-    name?: string;
-  } | null;
-  if (!res.ok || !data) throw new Error("google token rejected");
-  const iss = data.iss === "accounts.google.com" || data.iss === "https://accounts.google.com";
-  const verified = data.email_verified === true || data.email_verified === "true";
-  const email = normalizeEmail(data.email);
-  if (!iss || data.aud !== clientId || !verified || !email || !data.sub) {
-    throw new Error("google token mismatch");
-  }
-  return { email, sub: data.sub, name: clampName(data.name) };
+function isAdmin(user: User, env: ReturnType<typeof envOf>) {
+  return isAllowlistedAdmin(user, env.adminEmails, env.adminIds);
 }
 
 function attachAuth(server: ViteDevServer | PreviewServer) {
@@ -633,11 +536,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
   const env = envOf(mode);
   const method = req.method ?? "GET";
 
+  if (
+    pathname === `${AUTH_PREFIX}/email/start` ||
+    pathname === `${AUTH_PREFIX}/email/verify` ||
+    pathname === `${AUTH_PREFIX}/google`
+  ) {
+    json(res, 410, { ok: false, error: "email sign-in is off" });
+    return;
+  }
+
   if (pathname === `${AUTH_PREFIX}/config` && method === "GET") {
     json(res, 200, {
       ok: true,
-      googleClientId: env.googleClientId || null,
-      mailer: Boolean(env.resendKey),
+      providers: env.providers,
     });
     return;
   }
@@ -654,7 +565,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
       address: found.session.address ?? null,
       blocked: found.user.blocked ?? [],
       officeAd: publicOfficeAd(found.user),
-      admin: isAdminEmail(found.user.email, env.adminEmails),
+      admin: isAdmin(found.user, env),
     });
     return;
   }
@@ -665,7 +576,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
       json(res, 401, { ok: false, error: "signed out" });
       return;
     }
-    if (!isAdminEmail(found.user.email, env.adminEmails)) {
+    if (!isAdmin(found.user, env)) {
       json(res, 403, { ok: false, error: "film disabled" });
       return;
     }
@@ -673,137 +584,43 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
     return;
   }
 
-  if (pathname === `${AUTH_PREFIX}/email/start` && method === "POST") {
-    if (!allowIp(clientIp(req), 8, 10 * 60_000)) {
-      json(res, 429, { ok: false, error: "wait a few seconds" });
-      return;
-    }
-    if (!env.resendKey && !isDirectLoopback(req)) {
-      json(res, 503, { ok: false, error: "email sign-in unavailable" });
-      return;
-    }
-    const body = await readJson(req);
-    const email = normalizeEmail(body.email);
-    if (!email) {
-      json(res, 400, { ok: false, error: "bad email" });
-      return;
-    }
-    const now = Date.now();
-    const minted = await withStore((store) => {
-      const existing = store.codes.find((row) => row.email === email);
-      if (existing && now - existing.sentAt < CODE_GAP_MS) {
-        return { wait: true as const };
-      }
-      const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
-      store.codes = store.codes.filter((row) => row.email !== email);
-      store.codes.push({
-        email,
-        hash: hashCode(store.secret, email, code),
-        expiresAt: now + CODE_TTL_MS,
-        attempts: 0,
-        sentAt: now,
-      });
-      return { wait: false as const, code };
-    });
-    if (minted.wait) {
-      json(res, 429, { ok: false, error: "wait a few seconds" });
-      return;
-    }
-    let mailed = false;
-    try {
-      mailed = await sendCodeEmail(email, minted.code, env);
-    } catch (err) {
-      json(res, 502, { ok: false, error: `email failed: ${String(err)}` });
-      return;
-    }
-    if (!mailed) {
-      if (!isDirectLoopback(req)) {
-        json(res, 503, { ok: false, error: "email sign-in unavailable" });
-        return;
-      }
-      console.log(`[auth] ${email} code ${minted.code}`);
-    }
-    json(res, 200, {
-      ok: true,
-      mailed,
-      ...(mailed ? {} : { devCode: minted.code }),
-    });
-    return;
-  }
-
-  if (pathname === `${AUTH_PREFIX}/email/verify` && method === "POST") {
-    const body = await readJson(req);
-    const email = normalizeEmail(body.email);
-    const code = String(body.code ?? "").replace(/\s+/g, "");
-    if (!email || !/^\d{6}$/.test(code)) {
-      json(res, 400, { ok: false, error: "bad code" });
-      return;
-    }
-    const result = await withStore((store) => {
-      const row = store.codes.find((item) => item.email === email);
-      if (!row || row.expiresAt <= Date.now()) return { error: "code expired" as const };
-      row.attempts += 1;
-      if (row.attempts > MAX_CODE_ATTEMPTS) {
-        store.codes = store.codes.filter((item) => item.email !== email);
-        return { error: "too many tries" as const };
-      }
-      if (!safeEqual(row.hash, hashCode(store.secret, email, code))) {
-        return { error: "wrong code" as const };
-      }
-      store.codes = store.codes.filter((item) => item.email !== email);
-      const { user, isNew } = upsertUser(store, {
-        email,
-        guestId: clampGuestId(body.guestId),
-        name: clampName(body.name),
-        color: clampColor(body.color),
-        look: clampLook(body.look),
-      });
-      const session = mintSession(store, user);
-      return { user, token: session.token, isNew };
-    });
-    if ("error" in result) {
-      json(res, 401, { ok: false, error: result.error });
-      return;
-    }
-    json(res, 200, { ok: true, token: result.token, user: publicUser(result.user) });
-    return;
-  }
-
-  if (pathname === `${AUTH_PREFIX}/google` && method === "POST") {
+  if (pathname === `${AUTH_PREFIX}/supabase` && method === "POST") {
     if (!allowIp(clientIp(req), 30, 10 * 60_000)) {
       json(res, 429, { ok: false, error: "wait a few seconds" });
       return;
     }
-    if (!env.googleClientId) {
-      json(res, 503, { ok: false, error: "google unconfigured" });
+    if (!env.supabaseUrl) {
+      json(res, 503, { ok: false, error: "sign-in unavailable" });
       return;
     }
     const body = await readJson(req);
-    const credential = String(body.credential ?? "").trim();
-    if (!credential) {
-      json(res, 400, { ok: false, error: "missing credential" });
+    const accessToken = String(body.accessToken ?? "").trim();
+    if (!accessToken || accessToken.length > 12_000) {
+      json(res, 400, { ok: false, error: "missing token" });
       return;
     }
-    let google: { email: string; sub: string; name: string };
+    let identity: SupabaseIdentity;
     try {
-      google = await verifyGoogle(credential, env.googleClientId);
-    } catch {
-      json(res, 401, { ok: false, error: "google sign-in failed" });
+      identity = verifyForTests
+        ? await verifyForTests(accessToken)
+        : await verifySupabaseAccessToken(accessToken, {
+            issuer: supabaseIssuer(env.supabaseUrl),
+            secretKey: env.supabaseSecret,
+            jwks: await getSupabaseJwks(env.supabaseUrl),
+          });
+    } catch (err) {
+      console.error(`[auth] supabase ${err instanceof Error ? err.message : String(err)}`);
+      json(res, 401, { ok: false, error: "sign-in failed" });
       return;
     }
-    const result = await withStore((store) => {
-      const { user, isNew } = upsertUser(store, {
-        email: google.email,
-        googleSub: google.sub,
-        guestId: clampGuestId(body.guestId),
-        name: clampName(body.name) || google.name,
+    const result = await withStore((store) =>
+      establishSupabaseSession(store as unknown as { users: AccountRecord[]; sessions: AppSession[] }, identity, {
+        name: clampName(body.name),
         color: clampColor(body.color),
-        look: clampLook(body.look),
-      });
-      const session = mintSession(store, user);
-      return { user, token: session.token, isNew };
-    });
-    json(res, 200, { ok: true, token: result.token, user: publicUser(result.user) });
+        look: clampLook(body.look) ?? undefined,
+      }),
+    );
+    json(res, 200, { ok: true, token: result.token, user: publicUser(result.user as User) });
     return;
   }
 
@@ -976,4 +793,28 @@ async function serveOfficeAdFile(req: IncomingMessage, res: ServerResponse, path
   res.setHeader("Cache-Control", "public, max-age=86400");
   res.setHeader("Content-Length", String(body.length));
   res.end(body);
+}
+
+export async function dispatchAuthForTests(input: {
+  method: string;
+  pathname: string;
+  body?: string;
+  authorization?: string;
+}): Promise<{ status: number; json: unknown }> {
+  const req = Readable.from(input.body ? [Buffer.from(input.body)] : []) as IncomingMessage;
+  req.method = input.method;
+  req.url = input.pathname;
+  req.headers = input.authorization ? { authorization: input.authorization } : {};
+  let status = 0;
+  let raw = "";
+  const res = {
+    statusCode: 0,
+    setHeader() {},
+    end(body?: string) {
+      status = this.statusCode;
+      raw = typeof body === "string" ? body : "";
+    },
+  };
+  await handle(req, res as unknown as ServerResponse, input.pathname, "test");
+  return { status, json: raw ? (JSON.parse(raw) as unknown) : null };
 }

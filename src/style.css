@@ -830,8 +830,7 @@ body.editing #mac-stack {
 #mac-look-random,
 #mac-boot,
 #mac-logout,
-#mac-email-send,
-#mac-email-verify,
+.auth-provider,
 #mac-name-save,
 #day-end-ok,
 #day-end-go,
@@ -846,13 +845,9 @@ body.editing #mac-stack {
 #join-enter,
 #join-guest,
 #join-signin,
-#join-email-send,
-#join-email-verify,
 #join-back,
 #guest-over-signin,
 #guest-over-leave,
-#guest-over-email-send,
-#guest-over-verify,
 #guest-over-back {
   padding: 3px 10px;
   background: #ddd;
@@ -864,8 +859,7 @@ body.editing #mac-stack {
 
 #mac-boot,
 #mac-logout,
-#mac-email-send,
-#mac-email-verify,
+.auth-provider,
 #day-end-ok,
 #day-end-go,
 #day-end-home,
@@ -879,13 +873,9 @@ body.editing #mac-stack {
 #join-enter,
 #join-guest,
 #join-signin,
-#join-email-send,
-#join-email-verify,
 #join-back,
 #guest-over-signin,
 #guest-over-leave,
-#guest-over-email-send,
-#guest-over-verify,
 #guest-over-back {
   margin-top: 10px;
   width: 100%;
@@ -898,16 +888,14 @@ body.editing #mac-stack {
   border-top: 1px solid #000;
 }
 
-.mac-or {
-  margin: 10px 0 6px;
-  text-align: center;
-  font-size: 11px;
+.auth-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-#mac-google {
-  display: flex;
-  justify-content: center;
-  min-height: 40px;
+.auth-provider[hidden] {
+  display: none;
 }
 
 #mac-auth-hint {

@@ -14,6 +14,7 @@
     "test:link": "npx tsx scripts/test-link.mjs",
     "test:gate": "npx tsx scripts/test-gate.mjs",
     "test:reservations": "npx tsx scripts/test-reservations.mjs",
+    "test:auth": "npx tsx scripts/test-supabase-auth.mjs",
     "fill:floor": "node scripts/test-fill-floor.mjs",
     "fill:couch": "node scripts/test-fill-floor.mjs --couch",
     "teaser": "node scripts/teaser-floor.mjs",
@@ -21,7 +22,9 @@
   },
   "dependencies": {
     "@dcl/crypto": "^3.6.0",
+    "@supabase/supabase-js": "^2.117.2",
     "decentraland-crypto-fetch": "^2.0.1",
+    "jose": "^6.2.12",
     "livekit-client": "^2.22.3",
     "livekit-server-sdk": "^2.19.0",
     "three": "^0.170.0",
