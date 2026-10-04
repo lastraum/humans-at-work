@@ -1,5 +1,9 @@
 #!/bin/sh
 # Ships the app to humansat.work and restarts the floor server there.
+# The room, auth, and reservations run inside Vite. `npm start` is that
+# process bound to 127.0.0.1 with file watching off. Point pm2 at `npm start`.
+# `npm run build` writes dist/, which this rsync skips. `npm run start:preview`
+# serves that bundle, but only after dist/ is on the droplet.
 set -eu
 cd "$(dirname "$0")/.."
 npm run build

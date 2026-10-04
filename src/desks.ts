@@ -730,11 +730,7 @@ export function attachDesks(opts: {
   indexRoot(officesRoot);
   indexRoot(cubiclesRoot);
 
-  for (const avatar of plate.avatars ?? []) {
-    if (avatar.officeId && desks.has(avatar.officeId)) {
-      fixtures.set(avatar.officeId, avatar.id);
-    }
-  }
+  // Avatars on the plate are not occupants, so every desk stays claimable.
 
   const claimAt = (deskId: string) => claims.get(deskId);
 

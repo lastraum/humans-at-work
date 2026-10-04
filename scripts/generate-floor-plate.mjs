@@ -926,6 +926,7 @@ const floor = {
     row: o.row,
     rot: 0,
   })),
+  // No mannequins. Desks are claimed by people, and floor 2 counts those claims only.
   avatars: [],
   counts: {
     offices: offices.length,

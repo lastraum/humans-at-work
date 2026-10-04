@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   BOOK_START_MIN,
+  dayKeyInTz,
   joinReservation,
   minutesInTz,
   reservationEnded,
@@ -20,8 +21,24 @@ function assert(cond, message) {
   if (!cond) throw new Error(message);
 }
 
-const noonPt = Date.parse("2026-09-21T19:00:00Z"); // 12:00 PDT
-const sixAmPt = Date.parse("2026-09-21T13:00:00Z"); // 06:00 PDT
+/** UTC instant that lands on `day` (America/Los_Angeles) at `minutes` past midnight. */
+function instantOnDay(day, minutes) {
+  const target = Date.parse(`${day}T12:00:00Z`);
+  for (let offset = 0; offset <= 24; offset++) {
+    for (const sign of [-1, 1]) {
+      const ms = target + sign * offset * 60 * 60 * 1000;
+      if (dayKeyInTz(ms) === day && minutesInTz(ms) === minutes) return ms;
+    }
+  }
+  throw new Error(`no instant for ${day} @ ${minutes}`);
+}
+
+// Two days ahead so pruneOld (real today) keeps the rows join and access flip look up.
+const day = dayKeyInTz(Date.now() + 2 * 24 * 60 * 60 * 1000);
+const noonPt = instantOnDay(day, 12 * 60);
+const sixAmPt = instantOnDay(day, 6 * 60);
+assert(dayKeyInTz(sixAmPt) === day, "6:00 PT is on the fixture day");
+assert(dayKeyInTz(noonPt) === day, "12:00 PT is on the fixture day");
 assert(minutesInTz(sixAmPt) === 6 * 60, `expected 6:00 PT, got ${minutesInTz(sixAmPt)}`);
 assert(minutesInTz(noonPt) === 12 * 60, `expected 12:00 PT, got ${minutesInTz(noonPt)}`);
 
@@ -30,7 +47,7 @@ const overnight = tryReserve(
     roomId: "conf_0_0_2x1",
     peerId: "peer-a",
     name: "Ada",
-    day: "2026-09-21",
+    day,
     startMin: 23 * 60 + 30,
     durationMin: 60,
     access: "open",
@@ -44,7 +61,7 @@ const early = tryReserve(
     roomId: "conf_0_0_2x1",
     peerId: "peer-z",
     name: "Zed",
-    day: "2026-09-21",
+    day,
     startMin: 7 * 60 + 30,
     durationMin: 30,
     access: "open",
@@ -58,7 +75,7 @@ const past = tryReserve(
     roomId: "conf_0_0_2x1",
     peerId: "peer-a",
     name: "Ada",
-    day: "2026-09-21",
+    day,
     startMin: BOOK_START_MIN,
     durationMin: 30,
     access: "open",
@@ -73,7 +90,7 @@ const openBook = tryReserve(
     roomId: "conf_0_0_2x1",
     peerId: "peer-a",
     name: "Ada",
-    day: "2026-09-21",
+    day,
     startMin: 13 * 60,
     durationMin: 30,
     access: "open",
@@ -89,7 +106,7 @@ const codeBook = tryReserve(
     roomId: "conf_2_4_2x1",
     peerId: "peer-a",
     name: "Ada",
-    day: "2026-09-21",
+    day,
     startMin: 14 * 60,
     durationMin: 30,
     access: "code",

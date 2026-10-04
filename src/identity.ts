@@ -17,6 +17,8 @@ export type Identity = {
   profileUrl?: string;
   /** Saved avatar. Missing until they edit; the body still has a stable derived look. */
   look?: AvatarLook;
+  /** Set for a signed-in account, including providers that have no email. */
+  signedIn?: boolean;
 };
 
 function colorFor(id: string) {
@@ -45,6 +47,7 @@ function read(store: Storage, key: string): Identity | null {
       company: clampCompany(parsed.company) || undefined,
       profileUrl: clampProfileUrl(parsed.profileUrl) || undefined,
       look: clampLook(parsed.look),
+      signedIn: parsed.signedIn ? true : undefined,
     };
   } catch {
     return null;
@@ -106,13 +109,14 @@ export function saveIdentity(ident: Identity) {
   write(sessionStorage, TAB_KEY, ident);
   const account = read(localStorage, ACCOUNT_KEY);
   write(localStorage, ACCOUNT_KEY, {
-    id: ident.email ? ident.id : account?.id ?? ident.id,
+    id: ident.email || ident.signedIn ? ident.id : account?.id ?? ident.id,
     name: ident.name,
     color: ident.color,
     email: ident.email,
     company: ident.company,
     profileUrl: ident.profileUrl,
     look: ident.look,
+    signedIn: ident.signedIn || undefined,
   });
 }
 
@@ -121,7 +125,7 @@ export function applyAccount(user: {
   id: string;
   name: string;
   color: string;
-  email: string;
+  email?: string;
   company?: string;
   profileUrl?: string;
   look?: AvatarLook;
@@ -132,7 +136,8 @@ export function applyAccount(user: {
     id: user.id,
     name: sanitizeName(user.name) || defaultName(user.id),
     color: look?.shirt || user.color || colorFor(user.id),
-    email: user.email,
+    email: user.email || undefined,
+    signedIn: true,
     company: clampCompany(user.company) || undefined,
     profileUrl: clampProfileUrl(user.profileUrl) || undefined,
     look,
@@ -144,9 +149,9 @@ export function applyAccount(user: {
 
 export function clearAccountEmail() {
   const account = read(localStorage, ACCOUNT_KEY);
-  if (!account?.email) return;
-  const next = { ...account, email: undefined };
+  if (!account || (!account.email && !account.signedIn)) return;
+  const next = { ...account, email: undefined, signedIn: undefined };
   write(localStorage, ACCOUNT_KEY, next);
   const tab = read(sessionStorage, TAB_KEY);
-  if (tab) write(sessionStorage, TAB_KEY, { ...tab, email: undefined });
+  if (tab) write(sessionStorage, TAB_KEY, { ...tab, email: undefined, signedIn: undefined });
 }

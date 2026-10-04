@@ -1,21 +1,33 @@
-import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadEnv, type Plugin } from "vite";
+import { Readable } from "node:stream";
+import { loadEnv, type Plugin, type PreviewServer, type ViteDevServer } from "vite";
+import { enabledAuthProviders } from "../src/authProviders";
+import { clientIp } from "./net";
 import { clampLook, type AvatarLook } from "../src/avatarLook";
 import { MAX_ID, MAX_NAME, clampCompany, clampProfileUrl } from "../src/protocol";
 import { bankMinutes } from "../src/xp";
+import { FILM_SHOTS } from "./film";
+import {
+  establishSupabaseSession,
+  isAllowlistedAdmin,
+  type AccountRecord,
+  type AppSession,
+} from "./supabaseAccount";
+import {
+  getSupabaseJwks,
+  supabaseIssuer,
+  verifySupabaseAccessToken,
+  type SupabaseIdentity,
+} from "./supabaseJwt";
 
 const AUTH_PREFIX = "/__auth";
 const OFFICE_ADS_PREFIX = "/__office-ads";
 const OFFICE_AD_MAX_BYTES = 200_000;
 const OFFICE_AD_MIMES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
-const CODE_TTL_MS = 10 * 60 * 1000;
-const CODE_GAP_MS = 20 * 1000;
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const MAX_CODE_ATTEMPTS = 5;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 type User = {
@@ -24,6 +36,8 @@ type User = {
   name: string;
   color: string;
   googleSub?: string;
+  supabaseId?: string;
+  avatarUrl?: string;
   blocked?: string[];
   officeAdEnabled?: boolean;
   officeAdRev?: number;
@@ -68,7 +82,20 @@ type JsonRes = {
 };
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const storePath = resolve(rootDir, "data/accounts.json");
+const defaultStorePath = resolve(rootDir, "data/accounts.json");
+let storePath = defaultStorePath;
+
+/** Tests point the account file at a temp path. Production leaves this alone. */
+export function setAccountsStoreForTests(path: string | null) {
+  storePath = path ?? defaultStorePath;
+}
+
+let verifyForTests: ((token: string) => Promise<SupabaseIdentity>) | null = null;
+
+/** Tests skip the network and pass an already-checked Supabase identity. */
+export function setSupabaseVerifierForTests(fn: ((token: string) => Promise<SupabaseIdentity>) | null) {
+  verifyForTests = fn;
+}
 const adsDir = resolve(rootDir, "data/office-ads");
 
 let queue: Promise<unknown> = Promise.resolve();
@@ -83,26 +110,30 @@ function prune(store: Store, now = Date.now()) {
 }
 
 function loadStore(): Store {
+  if (!existsSync(storePath)) return emptyStore();
+  let parsed: Store;
   try {
-    const parsed = JSON.parse(readFileSync(storePath, "utf8")) as Store;
-    if (!parsed || typeof parsed !== "object") return emptyStore();
-    const store: Store = {
-      secret: typeof parsed.secret === "string" && parsed.secret.length >= 16 ? parsed.secret : randomBytes(32).toString("hex"),
-      users: Array.isArray(parsed.users) ? parsed.users : [],
-      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
-      codes: Array.isArray(parsed.codes) ? parsed.codes : [],
-    };
-    prune(store);
-    return store;
+    parsed = JSON.parse(readFileSync(storePath, "utf8")) as Store;
   } catch {
-    return emptyStore();
+    throw new Error("accounts.json is unreadable");
   }
+  if (!parsed || typeof parsed !== "object") throw new Error("accounts.json is unreadable");
+  const store: Store = {
+    secret: typeof parsed.secret === "string" && parsed.secret.length >= 16 ? parsed.secret : randomBytes(32).toString("hex"),
+    users: Array.isArray(parsed.users) ? parsed.users : [],
+    sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+    codes: Array.isArray(parsed.codes) ? parsed.codes : [],
+  };
+  prune(store);
+  return store;
 }
 
 function saveStore(store: Store) {
   prune(store);
   mkdirSync(dirname(storePath), { recursive: true });
-  writeFileSync(storePath, `${JSON.stringify(store, null, 2)}\n`);
+  const tmp = `${storePath}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(store, null, 2)}\n`);
+  renameSync(tmp, storePath);
 }
 
 function withStore<T>(fn: (store: Store) => T): Promise<T> {
@@ -126,14 +157,33 @@ function json(res: JsonRes, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+function readBody(req: IncomingMessage, max = 1_500_000): Promise<string> {
   return new Promise((resolveBody, reject) => {
     const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
     req.on("data", (chunk) => {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk ?? ""));
+      if (settled) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk ?? "");
+      size += buf.length;
+      if (size > max) {
+        fail(new Error("too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(buf);
     });
-    req.on("end", () => resolveBody(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
+    req.on("end", () => {
+      if (settled) return;
+      settled = true;
+      resolveBody(Buffer.concat(chunks).toString("utf8"));
+    });
+    req.on("error", (err) => fail(err instanceof Error ? err : new Error(String(err))));
   });
 }
 
@@ -170,27 +220,11 @@ function clampColor(value: unknown) {
   return /^#[0-9a-fA-F]{6}$/.test(color) ? color.toLowerCase() : "";
 }
 
-function clampGuestId(value: unknown) {
-  const id = String(value ?? "").slice(0, MAX_ID);
-  return /^[A-Za-z0-9._:-]{8,}$/.test(id) ? id : "";
-}
-
 function normalizeAddress(value: unknown) {
   const address = String(value ?? "")
     .trim()
     .toLowerCase();
   return /^0x[a-f0-9]{40}$/.test(address) ? address : "";
-}
-
-function hashCode(secret: string, email: string, code: string) {
-  return createHash("sha256").update(`${secret}:${email}:${code}`).digest("hex");
-}
-
-function safeEqual(a: string, b: string) {
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-  if (left.length !== right.length) return false;
-  return timingSafeEqual(left, right);
 }
 
 function publicUser(user: User) {
@@ -202,6 +236,7 @@ function publicUser(user: User) {
     color: look?.shirt || user.color,
     company: user.company || undefined,
     profileUrl: user.profileUrl || undefined,
+    avatarUrl: user.avatarUrl || undefined,
     look,
   };
 }
@@ -245,7 +280,13 @@ export type OfficeAdMeta = {
 export function officeAdMeta(userId: string): OfficeAdMeta | null {
   const id = safeUserId(userId);
   if (!id) return null;
-  const user = loadStore().users.find((row) => row.id === id);
+  let user: User | undefined;
+  try {
+    user = loadStore().users.find((row) => row.id === id);
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
   const file = findAdFile(id, user?.officeAdMime);
   const hasImage = Boolean(file);
   const enabled = Boolean(user?.officeAdEnabled) && hasImage;
@@ -308,65 +349,6 @@ function publicOfficeAd(user: User) {
   };
 }
 
-function mintSession(store: Store, user: User): Session {
-  const now = Date.now();
-  store.sessions = store.sessions.filter((row) => row.userId !== user.id);
-  const session: Session = {
-    token: randomBytes(32).toString("hex"),
-    userId: user.id,
-    createdAt: now,
-    expiresAt: now + SESSION_TTL_MS,
-  };
-  store.sessions.push(session);
-  user.lastLoginAt = now;
-  return session;
-}
-
-function findUser(store: Store, pred: (user: User) => boolean) {
-  return store.users.find(pred);
-}
-
-function upsertUser(
-  store: Store,
-  opts: {
-    email: string;
-    googleSub?: string;
-    guestId?: string;
-    name?: string;
-    color?: string;
-    look?: AvatarLook;
-  },
-): { user: User; isNew: boolean } {
-  const now = Date.now();
-  let user =
-    (opts.googleSub ? findUser(store, (row) => row.googleSub === opts.googleSub) : undefined) ??
-    findUser(store, (row) => row.email === opts.email);
-  if (user) {
-    user.email = opts.email;
-    if (opts.googleSub) user.googleSub = opts.googleSub;
-    if (!user.look && opts.look) {
-      user.look = opts.look;
-      user.color = opts.look.shirt;
-    }
-    user.lastLoginAt = now;
-    return { user, isNew: false };
-  }
-  const guestId = opts.guestId;
-  const takeGuest = Boolean(guestId && !store.users.some((row) => row.id === guestId));
-  user = {
-    id: takeGuest && guestId ? guestId : randomUUID(),
-    email: opts.email,
-    name: clampName(opts.name) || `Guest-${(guestId ?? "user").replace(/-/g, "").slice(0, 4)}`,
-    color: opts.look?.shirt || clampColor(opts.color) || "#f4a261",
-    look: opts.look,
-    googleSub: opts.googleSub,
-    createdAt: now,
-    lastLoginAt: now,
-  };
-  store.users.push(user);
-  return { user, isNew: true };
-}
-
 function sessionOf(store: Store, token: string) {
   if (!token) return null;
   const now = Date.now();
@@ -379,17 +361,50 @@ function sessionOf(store: Store, token: string) {
 
 export function userIdForToken(token: string) {
   if (!token) return null;
-  return sessionOf(loadStore(), token)?.user.id ?? null;
+  try {
+    return sessionOf(loadStore(), token)?.user.id ?? null;
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+const ipHits = new Map<string, { n: number; reset: number }>();
+
+function allowIp(ip: string, limit: number, windowMs: number) {
+  const now = Date.now();
+  if (ipHits.size > 4000) {
+    for (const [key, row] of ipHits) {
+      if (row.reset < now) ipHits.delete(key);
+    }
+  }
+  const row = ipHits.get(ip);
+  if (!row || row.reset < now) {
+    ipHits.set(ip, { n: 1, reset: now + windowMs });
+    return true;
+  }
+  row.n += 1;
+  return row.n <= limit;
 }
 
 export function hasUser(userId: string) {
   if (!userId) return false;
-  return loadStore().users.some((row) => row.id === userId);
+  try {
+    return loadStore().users.some((row) => row.id === userId);
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
 }
 
 export function readUserXp(userId: string) {
-  const user = loadStore().users.find((row) => row.id === userId);
-  return Math.max(0, Math.floor(Number(user?.xp) || 0));
+  try {
+    const user = loadStore().users.find((row) => row.id === userId);
+    return Math.max(0, Math.floor(Number(user?.xp) || 0));
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    return 0;
+  }
 }
 
 export function creditUserXp(userId: string, elapsedMs: number): Promise<{ xp: number }> {
@@ -415,113 +430,105 @@ export function absorbUserXp(userId: string, xp: number, remainderMs: number): P
 }
 
 export function accountXpSummary() {
-  const users = loadStore().users;
-  let xp = 0;
-  for (const user of users) xp += Math.max(0, Math.floor(Number(user.xp) || 0));
-  return { accounts: users.length, xp };
+  try {
+    const users = loadStore().users;
+    let xp = 0;
+    for (const user of users) xp += Math.max(0, Math.floor(Number(user.xp) || 0));
+    return { accounts: users.length, xp };
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    return { accounts: 0, xp: 0 };
+  }
 }
 
 export function userBlocks(userId: string) {
-  const user = loadStore().users.find((row) => row.id === userId);
-  return [...(user?.blocked ?? [])];
+  try {
+    const user = loadStore().users.find((row) => row.id === userId);
+    return [...(user?.blocked ?? [])];
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
 }
 
 export function whoBlocked(userId: string) {
-  return loadStore()
-    .users.filter((row) => (row.blocked ?? []).includes(userId))
-    .map((row) => row.id);
+  try {
+    return loadStore()
+      .users.filter((row) => (row.blocked ?? []).includes(userId))
+      .map((row) => row.id);
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
 }
 
 export function setUserBlock(userId: string, targetId: string, on: boolean) {
   if (!userId || !targetId || userId === targetId) return userBlocks(userId);
-  const store = loadStore();
-  const user = store.users.find((row) => row.id === userId);
-  if (!user) return [];
-  const set = new Set(user.blocked ?? []);
-  if (on) set.add(targetId);
-  else set.delete(targetId);
-  user.blocked = [...set];
-  saveStore(store);
-  return user.blocked;
+  try {
+    const store = loadStore();
+    const user = store.users.find((row) => row.id === userId);
+    if (!user) return [];
+    const set = new Set(user.blocked ?? []);
+    if (on) set.add(targetId);
+    else set.delete(targetId);
+    user.blocked = [...set];
+    saveStore(store);
+    return user.blocked;
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    return userBlocks(userId);
+  }
 }
 
 function envOf(mode: string) {
   const env = loadEnv(mode, rootDir, "");
+  const providersRaw = Object.prototype.hasOwnProperty.call(env, "VITE_AUTH_PROVIDERS")
+    ? env.VITE_AUTH_PROVIDERS
+    : process.env.VITE_AUTH_PROVIDERS;
   return {
-    googleClientId: env.GOOGLE_CLIENT_ID || env.VITE_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || "",
-    resendKey: env.RESEND_API_KEY || process.env.RESEND_API_KEY || "",
-    from: env.AUTH_FROM || env.RESEND_FROM || process.env.AUTH_FROM || process.env.RESEND_FROM || "Humans at Work <onboarding@resend.dev>",
+    supabaseUrl: env.SUPABASE_URL || process.env.SUPABASE_URL || "",
+    supabaseSecret: env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SECRET_KEY || "",
+    adminEmails: env.ADMIN_EMAILS || process.env.ADMIN_EMAILS || "",
+    adminIds: env.ADMIN_SUPABASE_IDS || process.env.ADMIN_SUPABASE_IDS || "",
+    providers: enabledAuthProviders(providersRaw),
   };
 }
 
-async function sendCodeEmail(to: string, code: string, env: ReturnType<typeof envOf>) {
-  if (!env.resendKey) return false;
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.resendKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: env.from,
-      to,
-      subject: `${code} is your Humans at Work code`,
-      text: `Your sign-in code is ${code}. It expires in 10 minutes.\n`,
-    }),
-  });
-  if (!res.ok) throw new Error(`resend ${res.status}`);
-  return true;
+function isAdmin(user: User, env: ReturnType<typeof envOf>) {
+  return isAllowlistedAdmin(user, env.adminEmails, env.adminIds);
 }
 
-async function verifyGoogle(credential: string, clientId: string) {
-  const url = `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`;
-  const res = await fetch(url);
-  const data = (await res.json().catch(() => null)) as {
-    aud?: string;
-    iss?: string;
-    email?: string;
-    email_verified?: string | boolean;
-    sub?: string;
-    name?: string;
-  } | null;
-  if (!res.ok || !data) throw new Error("google token rejected");
-  const iss = data.iss === "accounts.google.com" || data.iss === "https://accounts.google.com";
-  const verified = data.email_verified === true || data.email_verified === "true";
-  const email = normalizeEmail(data.email);
-  if (!iss || data.aud !== clientId || !verified || !email || !data.sub) {
-    throw new Error("google token mismatch");
-  }
-  return { email, sub: data.sub, name: clampName(data.name) };
+function attachAuth(server: ViteDevServer | PreviewServer) {
+  if (!existsSync(dirname(storePath))) mkdirSync(dirname(storePath), { recursive: true });
+  if (!existsSync(adsDir)) mkdirSync(adsDir, { recursive: true });
+  server.middlewares.use((req, res, next) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (url.pathname === "/data/accounts.json" || url.pathname === "/accounts.json") {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    if (url.pathname.startsWith(OFFICE_ADS_PREFIX)) {
+      void serveOfficeAdFile(req, res, url.pathname).catch((err) => {
+        json(res, 500, { ok: false, error: String(err) });
+      });
+      return;
+    }
+    if (!url.pathname.startsWith(AUTH_PREFIX)) {
+      next();
+      return;
+    }
+    void handle(req, res, url.pathname, server.config.mode).catch((err) => {
+      json(res, 500, { ok: false, error: String(err) });
+    });
+  });
 }
 
 export function authPlugin(): Plugin {
   return {
     name: "haw-auth",
-    configureServer(server) {
-      if (!existsSync(dirname(storePath))) mkdirSync(dirname(storePath), { recursive: true });
-      if (!existsSync(adsDir)) mkdirSync(adsDir, { recursive: true });
-      server.middlewares.use((req, res, next) => {
-        const url = new URL(req.url ?? "/", "http://localhost");
-        if (url.pathname === "/data/accounts.json" || url.pathname === "/accounts.json") {
-          res.statusCode = 404;
-          res.end();
-          return;
-        }
-        if (url.pathname.startsWith(OFFICE_ADS_PREFIX)) {
-          void serveOfficeAdFile(req, res, url.pathname).catch((err) => {
-            json(res, 500, { ok: false, error: String(err) });
-          });
-          return;
-        }
-        if (!url.pathname.startsWith(AUTH_PREFIX)) {
-          next();
-          return;
-        }
-        void handle(req, res, url.pathname, server.config.mode).catch((err) => {
-          json(res, 500, { ok: false, error: String(err) });
-        });
-      });
-    },
+    configureServer: attachAuth,
+    configurePreviewServer: attachAuth,
   };
 }
 
@@ -529,11 +536,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
   const env = envOf(mode);
   const method = req.method ?? "GET";
 
+  if (
+    pathname === `${AUTH_PREFIX}/email/start` ||
+    pathname === `${AUTH_PREFIX}/email/verify` ||
+    pathname === `${AUTH_PREFIX}/google`
+  ) {
+    json(res, 410, { ok: false, error: "email sign-in is off" });
+    return;
+  }
+
   if (pathname === `${AUTH_PREFIX}/config` && method === "GET") {
     json(res, 200, {
       ok: true,
-      googleClientId: env.googleClientId || null,
-      mailer: Boolean(env.resendKey),
+      providers: env.providers,
     });
     return;
   }
@@ -550,123 +565,62 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
       address: found.session.address ?? null,
       blocked: found.user.blocked ?? [],
       officeAd: publicOfficeAd(found.user),
+      admin: isAdmin(found.user, env),
     });
     return;
   }
 
-  if (pathname === `${AUTH_PREFIX}/email/start` && method === "POST") {
-    const body = await readJson(req);
-    const email = normalizeEmail(body.email);
-    if (!email) {
-      json(res, 400, { ok: false, error: "bad email" });
+  if (pathname === `${AUTH_PREFIX}/film` && method === "GET") {
+    const found = await withStore((store) => sessionOf(store, bearer(req)));
+    if (!found) {
+      json(res, 401, { ok: false, error: "signed out" });
       return;
     }
-    const now = Date.now();
-    const minted = await withStore((store) => {
-      const existing = store.codes.find((row) => row.email === email);
-      if (existing && now - existing.sentAt < CODE_GAP_MS) {
-        return { wait: true as const };
-      }
-      const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
-      store.codes = store.codes.filter((row) => row.email !== email);
-      store.codes.push({
-        email,
-        hash: hashCode(store.secret, email, code),
-        expiresAt: now + CODE_TTL_MS,
-        attempts: 0,
-        sentAt: now,
-      });
-      return { wait: false as const, code };
-    });
-    if (minted.wait) {
+    if (!isAdmin(found.user, env)) {
+      json(res, 403, { ok: false, error: "film disabled" });
+      return;
+    }
+    json(res, 200, { ok: true, shots: FILM_SHOTS });
+    return;
+  }
+
+  if (pathname === `${AUTH_PREFIX}/supabase` && method === "POST") {
+    if (!allowIp(clientIp(req), 30, 10 * 60_000)) {
       json(res, 429, { ok: false, error: "wait a few seconds" });
       return;
     }
-    let mailed = false;
-    try {
-      mailed = await sendCodeEmail(email, minted.code, env);
-    } catch (err) {
-      json(res, 502, { ok: false, error: `email failed: ${String(err)}` });
+    if (!env.supabaseUrl) {
+      json(res, 503, { ok: false, error: "sign-in unavailable" });
       return;
     }
-    json(res, 200, {
-      ok: true,
-      mailed,
-      ...(mailed ? {} : { devCode: minted.code }),
-    });
-    if (!mailed) console.log(`[auth] ${email} code ${minted.code}`);
-    return;
-  }
-
-  if (pathname === `${AUTH_PREFIX}/email/verify` && method === "POST") {
     const body = await readJson(req);
-    const email = normalizeEmail(body.email);
-    const code = String(body.code ?? "").replace(/\s+/g, "");
-    if (!email || !/^\d{6}$/.test(code)) {
-      json(res, 400, { ok: false, error: "bad code" });
+    const accessToken = String(body.accessToken ?? "").trim();
+    if (!accessToken || accessToken.length > 12_000) {
+      json(res, 400, { ok: false, error: "missing token" });
       return;
     }
-    const result = await withStore((store) => {
-      const row = store.codes.find((item) => item.email === email);
-      if (!row || row.expiresAt <= Date.now()) return { error: "code expired" as const };
-      row.attempts += 1;
-      if (row.attempts > MAX_CODE_ATTEMPTS) {
-        store.codes = store.codes.filter((item) => item.email !== email);
-        return { error: "too many tries" as const };
-      }
-      if (!safeEqual(row.hash, hashCode(store.secret, email, code))) {
-        return { error: "wrong code" as const };
-      }
-      store.codes = store.codes.filter((item) => item.email !== email);
-      const { user, isNew } = upsertUser(store, {
-        email,
-        guestId: clampGuestId(body.guestId),
+    let identity: SupabaseIdentity;
+    try {
+      identity = verifyForTests
+        ? await verifyForTests(accessToken)
+        : await verifySupabaseAccessToken(accessToken, {
+            issuer: supabaseIssuer(env.supabaseUrl),
+            secretKey: env.supabaseSecret,
+            jwks: await getSupabaseJwks(env.supabaseUrl),
+          });
+    } catch (err) {
+      console.error(`[auth] supabase ${err instanceof Error ? err.message : String(err)}`);
+      json(res, 401, { ok: false, error: "sign-in failed" });
+      return;
+    }
+    const result = await withStore((store) =>
+      establishSupabaseSession(store as unknown as { users: AccountRecord[]; sessions: AppSession[] }, identity, {
         name: clampName(body.name),
         color: clampColor(body.color),
-        look: clampLook(body.look),
-      });
-      const session = mintSession(store, user);
-      return { user, token: session.token, isNew };
-    });
-    if ("error" in result) {
-      json(res, 401, { ok: false, error: result.error });
-      return;
-    }
-    json(res, 200, { ok: true, token: result.token, user: publicUser(result.user) });
-    return;
-  }
-
-  if (pathname === `${AUTH_PREFIX}/google` && method === "POST") {
-    if (!env.googleClientId) {
-      json(res, 503, { ok: false, error: "google unconfigured" });
-      return;
-    }
-    const body = await readJson(req);
-    const credential = String(body.credential ?? "").trim();
-    if (!credential) {
-      json(res, 400, { ok: false, error: "missing credential" });
-      return;
-    }
-    let google: { email: string; sub: string; name: string };
-    try {
-      google = await verifyGoogle(credential, env.googleClientId);
-    } catch {
-      json(res, 401, { ok: false, error: "google sign-in failed" });
-      return;
-    }
-    const result = await withStore((store) => {
-      const { user, isNew } = upsertUser(store, {
-        email: google.email,
-        googleSub: google.sub,
-        guestId: clampGuestId(body.guestId),
-        name: clampName(body.name) || google.name,
-        color: clampColor(body.color),
-        look: clampLook(body.look),
-      });
-      const session = mintSession(store, user);
-      return { user, token: session.token, isNew };
-    });
-    json(res, 200, { ok: true, token: result.token, user: publicUser(result.user) });
+        look: clampLook(body.look) ?? undefined,
+      }),
+    );
+    json(res, 200, { ok: true, token: result.token, user: publicUser(result.user as User) });
     return;
   }
 
@@ -820,7 +774,14 @@ async function serveOfficeAdFile(req: IncomingMessage, res: ServerResponse, path
     json(res, 404, { ok: false, error: "not found" });
     return;
   }
-  const user = loadStore().users.find((row) => row.id === id);
+  let user: User | undefined;
+  try {
+    user = loadStore().users.find((row) => row.id === id);
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    json(res, 503, { ok: false, error: "unavailable" });
+    return;
+  }
   const file = findAdFile(id, user?.officeAdMime);
   if (!file) {
     json(res, 404, { ok: false, error: "not found" });
@@ -832,4 +793,28 @@ async function serveOfficeAdFile(req: IncomingMessage, res: ServerResponse, path
   res.setHeader("Cache-Control", "public, max-age=86400");
   res.setHeader("Content-Length", String(body.length));
   res.end(body);
+}
+
+export async function dispatchAuthForTests(input: {
+  method: string;
+  pathname: string;
+  body?: string;
+  authorization?: string;
+}): Promise<{ status: number; json: unknown }> {
+  const req = Readable.from(input.body ? [Buffer.from(input.body)] : []) as IncomingMessage;
+  req.method = input.method;
+  req.url = input.pathname;
+  req.headers = input.authorization ? { authorization: input.authorization } : {};
+  let status = 0;
+  let raw = "";
+  const res = {
+    statusCode: 0,
+    setHeader() {},
+    end(body?: string) {
+      status = this.statusCode;
+      raw = typeof body === "string" ? body : "";
+    },
+  };
+  await handle(req, res as unknown as ServerResponse, input.pathname, "test");
+  return { status, json: raw ? (JSON.parse(raw) as unknown) : null };
 }
