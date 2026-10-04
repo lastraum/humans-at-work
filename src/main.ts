@@ -340,14 +340,16 @@ function setFilmMode(mode: FilmMode) {
 
 if (wantFilm) setFilmMode(filmQuery === "chat" || shotName === "chat" ? "chat" : "hide");
 
-window.addEventListener("keydown", (event) => {
-  if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
-  if (isTypingTarget(event.target)) return;
-  if (event.key !== "h" && event.key !== "H") return;
-  const next = filmOrder[(filmOrder.indexOf(filmMode) + 1) % filmOrder.length] ?? "off";
-  setFilmMode(next);
-  event.preventDefault();
-});
+if (wantFilm) {
+  window.addEventListener("keydown", (event) => {
+    if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (isTypingTarget(event.target)) return;
+    if (event.key !== "h" && event.key !== "H") return;
+    const next = filmOrder[(filmOrder.indexOf(filmMode) + 1) % filmOrder.length] ?? "off";
+    setFilmMode(next);
+    event.preventDefault();
+  });
+}
 
 const TEASER_SHOTS: Record<
   string,
@@ -686,33 +688,33 @@ loadPlate()
     };
 
     livePlate = plate;
-    window.hawShot = (name: string) => {
+    if (wantFilm) window.hawShot = (name: string) => {
       filmFollow = "";
       const shot = TEASER_SHOTS[name];
       setFilmMode(shot?.film ?? "hide");
       applyTeaserShot(plate, name);
     };
-    window.hawFollow = (name) => {
+    if (wantFilm) window.hawFollow = (name) => {
       filmFollow = name?.trim() ?? "";
       if (filmFollow) {
         camera.zoom = 7.2;
         camera.updateProjectionMatrix();
       }
     };
-    window.hawFilm = (mode) => {
+    if (wantFilm) window.hawFilm = (mode) => {
       if (mode === "hide" || mode === "chat" || mode === "off" || mode === "hud") setFilmMode(mode);
     };
-    window.hawGo = (x, y) => {
+    if (wantFilm) window.hawGo = (x, y) => {
       playerCtl?.goTo(x, y);
     };
-    window.hawMoving = () => Boolean(playerCtl?.moving());
-    window.hawMac = (panel) => {
+    if (wantFilm) window.hawMoving = () => Boolean(playerCtl?.moving());
+    if (wantFilm) window.hawMac = (panel) => {
       setFilmMode("chat");
       document.querySelector("#mac")?.classList.remove("collapsed");
       const btn = document.querySelector<HTMLButtonElement>(`[data-mac="${panel}"]`);
       btn?.click();
     };
-    window.hawLook = (dir) => {
+    if (wantFilm) window.hawLook = (dir) => {
       lookFrom(dir);
       camera.zoom = 9.4;
       camera.updateProjectionMatrix();
@@ -1981,7 +1983,7 @@ loadPlate()
       claimShiftDesk.textContent = desks.pretty(desk);
       claimShift.hidden = false;
     };
-    window.hawOpenClaim = (deskId) => {
+    if (wantFilm) window.hawOpenClaim = (deskId) => {
       const desk = desks.get(deskId);
       if (desk) showClaimShift(desk);
     };

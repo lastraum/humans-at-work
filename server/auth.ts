@@ -1,9 +1,10 @@
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadEnv, type Plugin } from "vite";
+import { loadEnv, type Plugin, type PreviewServer, type ViteDevServer } from "vite";
+import { clientIp, isDirectLoopback } from "./net";
 import { clampLook, type AvatarLook } from "../src/avatarLook";
 import { MAX_ID, MAX_NAME, clampCompany, clampProfileUrl } from "../src/protocol";
 import { bankMinutes } from "../src/xp";
@@ -83,26 +84,30 @@ function prune(store: Store, now = Date.now()) {
 }
 
 function loadStore(): Store {
+  if (!existsSync(storePath)) return emptyStore();
+  let parsed: Store;
   try {
-    const parsed = JSON.parse(readFileSync(storePath, "utf8")) as Store;
-    if (!parsed || typeof parsed !== "object") return emptyStore();
-    const store: Store = {
-      secret: typeof parsed.secret === "string" && parsed.secret.length >= 16 ? parsed.secret : randomBytes(32).toString("hex"),
-      users: Array.isArray(parsed.users) ? parsed.users : [],
-      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
-      codes: Array.isArray(parsed.codes) ? parsed.codes : [],
-    };
-    prune(store);
-    return store;
+    parsed = JSON.parse(readFileSync(storePath, "utf8")) as Store;
   } catch {
-    return emptyStore();
+    throw new Error("accounts.json is unreadable");
   }
+  if (!parsed || typeof parsed !== "object") throw new Error("accounts.json is unreadable");
+  const store: Store = {
+    secret: typeof parsed.secret === "string" && parsed.secret.length >= 16 ? parsed.secret : randomBytes(32).toString("hex"),
+    users: Array.isArray(parsed.users) ? parsed.users : [],
+    sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+    codes: Array.isArray(parsed.codes) ? parsed.codes : [],
+  };
+  prune(store);
+  return store;
 }
 
 function saveStore(store: Store) {
   prune(store);
   mkdirSync(dirname(storePath), { recursive: true });
-  writeFileSync(storePath, `${JSON.stringify(store, null, 2)}\n`);
+  const tmp = `${storePath}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(store, null, 2)}\n`);
+  renameSync(tmp, storePath);
 }
 
 function withStore<T>(fn: (store: Store) => T): Promise<T> {
@@ -126,14 +131,33 @@ function json(res: JsonRes, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+function readBody(req: IncomingMessage, max = 1_500_000): Promise<string> {
   return new Promise((resolveBody, reject) => {
     const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
     req.on("data", (chunk) => {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk ?? ""));
+      if (settled) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk ?? "");
+      size += buf.length;
+      if (size > max) {
+        fail(new Error("too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(buf);
     });
-    req.on("end", () => resolveBody(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
+    req.on("end", () => {
+      if (settled) return;
+      settled = true;
+      resolveBody(Buffer.concat(chunks).toString("utf8"));
+    });
+    req.on("error", (err) => fail(err instanceof Error ? err : new Error(String(err))));
   });
 }
 
@@ -245,7 +269,13 @@ export type OfficeAdMeta = {
 export function officeAdMeta(userId: string): OfficeAdMeta | null {
   const id = safeUserId(userId);
   if (!id) return null;
-  const user = loadStore().users.find((row) => row.id === id);
+  let user: User | undefined;
+  try {
+    user = loadStore().users.find((row) => row.id === id);
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
   const file = findAdFile(id, user?.officeAdMime);
   const hasImage = Boolean(file);
   const enabled = Boolean(user?.officeAdEnabled) && hasImage;
@@ -379,17 +409,50 @@ function sessionOf(store: Store, token: string) {
 
 export function userIdForToken(token: string) {
   if (!token) return null;
-  return sessionOf(loadStore(), token)?.user.id ?? null;
+  try {
+    return sessionOf(loadStore(), token)?.user.id ?? null;
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+const ipHits = new Map<string, { n: number; reset: number }>();
+
+function allowIp(ip: string, limit: number, windowMs: number) {
+  const now = Date.now();
+  if (ipHits.size > 4000) {
+    for (const [key, row] of ipHits) {
+      if (row.reset < now) ipHits.delete(key);
+    }
+  }
+  const row = ipHits.get(ip);
+  if (!row || row.reset < now) {
+    ipHits.set(ip, { n: 1, reset: now + windowMs });
+    return true;
+  }
+  row.n += 1;
+  return row.n <= limit;
 }
 
 export function hasUser(userId: string) {
   if (!userId) return false;
-  return loadStore().users.some((row) => row.id === userId);
+  try {
+    return loadStore().users.some((row) => row.id === userId);
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
 }
 
 export function readUserXp(userId: string) {
-  const user = loadStore().users.find((row) => row.id === userId);
-  return Math.max(0, Math.floor(Number(user?.xp) || 0));
+  try {
+    const user = loadStore().users.find((row) => row.id === userId);
+    return Math.max(0, Math.floor(Number(user?.xp) || 0));
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    return 0;
+  }
 }
 
 export function creditUserXp(userId: string, elapsedMs: number): Promise<{ xp: number }> {
@@ -415,34 +478,54 @@ export function absorbUserXp(userId: string, xp: number, remainderMs: number): P
 }
 
 export function accountXpSummary() {
-  const users = loadStore().users;
-  let xp = 0;
-  for (const user of users) xp += Math.max(0, Math.floor(Number(user.xp) || 0));
-  return { accounts: users.length, xp };
+  try {
+    const users = loadStore().users;
+    let xp = 0;
+    for (const user of users) xp += Math.max(0, Math.floor(Number(user.xp) || 0));
+    return { accounts: users.length, xp };
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    return { accounts: 0, xp: 0 };
+  }
 }
 
 export function userBlocks(userId: string) {
-  const user = loadStore().users.find((row) => row.id === userId);
-  return [...(user?.blocked ?? [])];
+  try {
+    const user = loadStore().users.find((row) => row.id === userId);
+    return [...(user?.blocked ?? [])];
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
 }
 
 export function whoBlocked(userId: string) {
-  return loadStore()
-    .users.filter((row) => (row.blocked ?? []).includes(userId))
-    .map((row) => row.id);
+  try {
+    return loadStore()
+      .users.filter((row) => (row.blocked ?? []).includes(userId))
+      .map((row) => row.id);
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
 }
 
 export function setUserBlock(userId: string, targetId: string, on: boolean) {
   if (!userId || !targetId || userId === targetId) return userBlocks(userId);
-  const store = loadStore();
-  const user = store.users.find((row) => row.id === userId);
-  if (!user) return [];
-  const set = new Set(user.blocked ?? []);
-  if (on) set.add(targetId);
-  else set.delete(targetId);
-  user.blocked = [...set];
-  saveStore(store);
-  return user.blocked;
+  try {
+    const store = loadStore();
+    const user = store.users.find((row) => row.id === userId);
+    if (!user) return [];
+    const set = new Set(user.blocked ?? []);
+    if (on) set.add(targetId);
+    else set.delete(targetId);
+    user.blocked = [...set];
+    saveStore(store);
+    return user.blocked;
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    return userBlocks(userId);
+  }
 }
 
 function envOf(mode: string) {
@@ -494,34 +577,37 @@ async function verifyGoogle(credential: string, clientId: string) {
   return { email, sub: data.sub, name: clampName(data.name) };
 }
 
+function attachAuth(server: ViteDevServer | PreviewServer) {
+  if (!existsSync(dirname(storePath))) mkdirSync(dirname(storePath), { recursive: true });
+  if (!existsSync(adsDir)) mkdirSync(adsDir, { recursive: true });
+  server.middlewares.use((req, res, next) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (url.pathname === "/data/accounts.json" || url.pathname === "/accounts.json") {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    if (url.pathname.startsWith(OFFICE_ADS_PREFIX)) {
+      void serveOfficeAdFile(req, res, url.pathname).catch((err) => {
+        json(res, 500, { ok: false, error: String(err) });
+      });
+      return;
+    }
+    if (!url.pathname.startsWith(AUTH_PREFIX)) {
+      next();
+      return;
+    }
+    void handle(req, res, url.pathname, server.config.mode).catch((err) => {
+      json(res, 500, { ok: false, error: String(err) });
+    });
+  });
+}
+
 export function authPlugin(): Plugin {
   return {
     name: "haw-auth",
-    configureServer(server) {
-      if (!existsSync(dirname(storePath))) mkdirSync(dirname(storePath), { recursive: true });
-      if (!existsSync(adsDir)) mkdirSync(adsDir, { recursive: true });
-      server.middlewares.use((req, res, next) => {
-        const url = new URL(req.url ?? "/", "http://localhost");
-        if (url.pathname === "/data/accounts.json" || url.pathname === "/accounts.json") {
-          res.statusCode = 404;
-          res.end();
-          return;
-        }
-        if (url.pathname.startsWith(OFFICE_ADS_PREFIX)) {
-          void serveOfficeAdFile(req, res, url.pathname).catch((err) => {
-            json(res, 500, { ok: false, error: String(err) });
-          });
-          return;
-        }
-        if (!url.pathname.startsWith(AUTH_PREFIX)) {
-          next();
-          return;
-        }
-        void handle(req, res, url.pathname, server.config.mode).catch((err) => {
-          json(res, 500, { ok: false, error: String(err) });
-        });
-      });
-    },
+    configureServer: attachAuth,
+    configurePreviewServer: attachAuth,
   };
 }
 
@@ -555,6 +641,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
   }
 
   if (pathname === `${AUTH_PREFIX}/email/start` && method === "POST") {
+    if (!allowIp(clientIp(req), 8, 10 * 60_000)) {
+      json(res, 429, { ok: false, error: "wait a few seconds" });
+      return;
+    }
+    if (!env.resendKey && !isDirectLoopback(req)) {
+      json(res, 503, { ok: false, error: "email sign-in unavailable" });
+      return;
+    }
     const body = await readJson(req);
     const email = normalizeEmail(body.email);
     if (!email) {
@@ -589,12 +683,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
       json(res, 502, { ok: false, error: `email failed: ${String(err)}` });
       return;
     }
+    if (!mailed) {
+      if (!isDirectLoopback(req)) {
+        json(res, 503, { ok: false, error: "email sign-in unavailable" });
+        return;
+      }
+      console.log(`[auth] ${email} code ${minted.code}`);
+    }
     json(res, 200, {
       ok: true,
       mailed,
       ...(mailed ? {} : { devCode: minted.code }),
     });
-    if (!mailed) console.log(`[auth] ${email} code ${minted.code}`);
     return;
   }
 
@@ -637,6 +737,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, pathname: strin
   }
 
   if (pathname === `${AUTH_PREFIX}/google` && method === "POST") {
+    if (!allowIp(clientIp(req), 30, 10 * 60_000)) {
+      json(res, 429, { ok: false, error: "wait a few seconds" });
+      return;
+    }
     if (!env.googleClientId) {
       json(res, 503, { ok: false, error: "google unconfigured" });
       return;
@@ -820,7 +924,14 @@ async function serveOfficeAdFile(req: IncomingMessage, res: ServerResponse, path
     json(res, 404, { ok: false, error: "not found" });
     return;
   }
-  const user = loadStore().users.find((row) => row.id === id);
+  let user: User | undefined;
+  try {
+    user = loadStore().users.find((row) => row.id === id);
+  } catch (err) {
+    console.error(`[auth] ${err instanceof Error ? err.message : String(err)}`);
+    json(res, 503, { ok: false, error: "unavailable" });
+    return;
+  }
   const file = findAdFile(id, user?.officeAdMime);
   if (!file) {
     json(res, 404, { ok: false, error: "not found" });

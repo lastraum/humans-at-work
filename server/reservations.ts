@@ -1,5 +1,5 @@
 import { randomInt, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ConfAccess, ConferenceReservation } from "../src/protocol";
@@ -26,11 +26,18 @@ function emptyStore(): Store {
   return { reservations: [] };
 }
 
+let preserveFile = false;
+
 function loadStore(): Store {
+  preserveFile = false;
   try {
     if (!existsSync(storePath)) return emptyStore();
     const parsed = JSON.parse(readFileSync(storePath, "utf8")) as Store;
-    if (!parsed || !Array.isArray(parsed.reservations)) return emptyStore();
+    if (!parsed || !Array.isArray(parsed.reservations)) {
+      preserveFile = true;
+      console.error("[reservations] store unreadable; not replacing it");
+      return emptyStore();
+    }
     return {
       reservations: parsed.reservations
         .filter(
@@ -46,13 +53,20 @@ function loadStore(): Store {
         .map(normalizeReservation),
     };
   } catch {
+    if (existsSync(storePath)) {
+      preserveFile = true;
+      console.error("[reservations] store unreadable; not replacing it");
+    }
     return emptyStore();
   }
 }
 
 function saveStore(store: Store) {
+  if (preserveFile) return;
   mkdirSync(dirname(storePath), { recursive: true });
-  writeFileSync(storePath, `${JSON.stringify(store, null, 2)}\n`);
+  const tmp = `${storePath}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(store, null, 2)}\n`);
+  renameSync(tmp, storePath);
 }
 
 function clampAccess(value: unknown): ConfAccess {
@@ -170,8 +184,9 @@ function pruneOld(store: Store, today = dayKeyInTz()) {
 
 export function listReservations(opts?: { day?: string; roomId?: string }): ConferenceReservation[] {
   const store = loadStore();
+  const before = store.reservations.length;
   pruneOld(store);
-  saveStore(store);
+  if (store.reservations.length !== before) saveStore(store);
   const day = opts?.day;
   const roomId = opts?.roomId;
   return store.reservations.filter((row) => {
@@ -232,6 +247,7 @@ export function tryReserve(input: ReserveInput, now = Date.now()): ReserveResult
   }
 
   const store = loadStore();
+  if (preserveFile) return { ok: false, error: "reservations unavailable" };
   pruneOld(store, today);
 
   for (const row of store.reservations) {
@@ -270,6 +286,7 @@ export function tryReserve(input: ReserveInput, now = Date.now()): ReserveResult
 
 export function trySetAccess(id: string, peerId: string, access: ConfAccess): ReserveResult {
   const store = loadStore();
+  if (preserveFile) return { ok: false, error: "reservations unavailable" };
   pruneOld(store);
   const row = store.reservations.find((item) => item.id === id);
   if (!row) return { ok: false, error: "not found" };
@@ -293,6 +310,7 @@ export function joinReservation(roomId: string, code: string, now = Date.now()):
     .toUpperCase();
   if (!roomKey || needle.length < 4) return { ok: false, error: "enter the door code" };
   const store = loadStore();
+  if (preserveFile) return { ok: false, error: "reservations unavailable" };
   pruneOld(store);
   const row = store.reservations.find(
     (item) =>
@@ -309,6 +327,7 @@ export type CancelResult = { ok: true; id: string } | { ok: false; error: string
 
 export function tryCancel(id: string, peerId: string): CancelResult {
   const store = loadStore();
+  if (preserveFile) return { ok: false, error: "reservations unavailable" };
   pruneOld(store);
   const idx = store.reservations.findIndex((row) => row.id === id);
   if (idx < 0) return { ok: false, error: "not found" };

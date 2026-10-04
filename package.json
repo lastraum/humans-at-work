@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "start": "HAW_PROD=1 vite --host 127.0.0.1 --port 5885 --strictPort",
+    "start:preview": "vite preview --host 127.0.0.1 --port 5885 --strictPort",
     "build:prod": "bash scripts/deploy-prod.sh",
     "generate:floor": "node scripts/generate-floor-plate.mjs",
     "test:floors": "npx tsx scripts/test-floors.mjs",

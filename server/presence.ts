@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadEnv, type Plugin } from "vite";
+import { loadEnv, type Plugin, type PreviewServer, type ViteDevServer } from "vite";
 import { countedMs, holdContact, resumeContact } from "../src/linkHealth";
 import { bankMinutes, guestGrant, xpRateLabel } from "../src/xp";
 import { absorbUserXp, accountXpSummary, creditUserXp, hasUser, readUserXp } from "./auth";
@@ -101,23 +101,38 @@ export function forgetGate(rows: GateVisit[], id: string) {
   if (hit) hit.entered = true;
 }
 
+let preserveFile = false;
+
 function loadStore(): Store {
+  preserveFile = false;
   try {
-    const parsed = JSON.parse(readFileSync(storePath, "utf8")) as Partial<Store>;
-    const visitors = Array.isArray(parsed.visitors) ? parsed.visitors : [];
+    const raw = readFileSync(storePath, "utf8");
+    const parsed = JSON.parse(raw) as Partial<Store>;
+    const visitors = Array.isArray(parsed.visitors) ? parsed.visitors : null;
     const gate = Array.isArray(parsed.gate) ? parsed.gate : [];
+    if (!visitors) {
+      preserveFile = true;
+      console.error("[presence] store unreadable; not replacing it");
+      return emptyStore();
+    }
     return {
       visitors: visitors.filter((row) => row && typeof row.id === "string" && row.id),
       gate: gate
         .filter((row) => row && gateId(row.id))
         .map((row) => ({ id: row.id, seen: Number(row.seen) || 0, entered: row.entered === true })),
     };
-  } catch {
+  } catch (err) {
+    const missing = (err as NodeJS.ErrnoException)?.code === "ENOENT";
+    if (!missing) {
+      preserveFile = true;
+      console.error("[presence] store unreadable; not replacing it");
+    }
     return emptyStore();
   }
 }
 
 function saveStore(store: Store) {
+  if (preserveFile) return;
   mkdirSync(dirname(storePath), { recursive: true });
   const tmp = `${storePath}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(store, null, 2)}\n`);
@@ -706,6 +721,11 @@ const lookHits = new Map<string, { n: number; reset: number }>();
 
 function allowLook(ip: string) {
   const now = Date.now();
+  if (lookHits.size > 4000) {
+    for (const [key, row] of lookHits) {
+      if (row.reset < now) lookHits.delete(key);
+    }
+  }
   const row = lookHits.get(ip);
   if (!row || row.reset < now) {
     lookHits.set(ip, { n: 1, reset: now + 10 * 60_000 });
@@ -766,20 +786,29 @@ function secretMatch(pathname: string, secret: string) {
   return timingSafeEqual(got, want);
 }
 
-export function presencePlugin(): Plugin {
-  return {
-    name: "haw-presence",
-    configureServer(server) {
-      const flag = "__hawPresence" as const;
-      if ((server as typeof server & { [flag]?: boolean })[flag]) return;
-      (server as typeof server & { [flag]?: boolean })[flag] = true;
-      startPresenceTick();
-      const env = loadEnv(server.config.mode, server.config.root, "");
-      const secret = (env.STATS_AUTH || process.env.STATS_AUTH || "").trim();
-      const enabled = /^[A-Za-z0-9_-]{16,128}$/.test(secret);
-      server.middlewares.use((req, res, next) => {
-        const url = new URL(req.url ?? "/", "http://localhost");
-        if (url.pathname === "/__presence/look") {
+function attachPresence(server: ViteDevServer | PreviewServer) {
+  const flag = "__hawPresence" as const;
+  if ((server as typeof server & { [flag]?: boolean })[flag]) return;
+  (server as typeof server & { [flag]?: boolean })[flag] = true;
+  startPresenceTick();
+  const env = loadEnv(server.config.mode, server.config.root, "");
+  const secret = (env.STATS_AUTH || process.env.STATS_AUTH || "").trim();
+  const enabled = /^[A-Za-z0-9_-]{16,128}$/.test(secret);
+  server.middlewares.use((req, res, next) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (url.pathname === "/__health") {
+      if ((req.method ?? "GET") !== "GET") {
+        res.statusCode = 405;
+        res.end();
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Cache-Control", "no-store");
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (url.pathname === "/__presence/look") {
           if ((req.method ?? "GET") !== "POST") {
             res.statusCode = 405;
             res.end();
@@ -809,7 +838,13 @@ export function presencePlugin(): Plugin {
         res.setHeader("X-Robots-Tag", "noindex");
         res.end(page);
       });
-      server.httpServer?.on("close", () => stopPresenceTick());
-    },
+  server.httpServer?.on("close", () => stopPresenceTick());
+}
+
+export function presencePlugin(): Plugin {
+  return {
+    name: "haw-presence",
+    configureServer: attachPresence,
+    configurePreviewServer: attachPresence,
   };
 }

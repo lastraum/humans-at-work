@@ -9,6 +9,7 @@ data/accounts.json
 data/metrics.json
 data/presence.json
 data/presence.json.tmp
-
+data/accounts.json.tmp
 data/conference-reservations.json
+data/conference-reservations.json.tmp
 data/office-ads/

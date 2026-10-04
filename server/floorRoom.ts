@@ -25,6 +25,7 @@ import {
 } from "../src/protocol";
 import { FIRST_FLOOR, groupClaimsByFloor, selectableFloors, sameFloors } from "../src/floors";
 import { officeAdForPeer, setUserBlock, userBlocks, userIdForToken, whoBlocked } from "./auth";
+import { isDirectLoopback } from "./net";
 import { PING_MS, RECOVERY_MS, nextPingSample } from "../src/linkHealth";
 import { clockZone, countryFrom, holdShift, isFloorBot, noteClose, noteHello, noteShiftHold, startPresenceTick, stopPresenceTick } from "./presence";
 import {
@@ -559,13 +560,35 @@ function clampId(value: unknown) {
   return /^[A-Za-z0-9._:-]+$/.test(id) ? id : "";
 }
 
-/** Local fill-floor bots may claim without an account. Loopback only. */
+/** Local fill-floor bots may claim without an account. Direct loopback only.
+ *  nginx's connection is also 127.0.0.1, so a public request must not pass. */
 function localFillBot(id: string, token: unknown, req: IncomingMessage) {
   if (!id.startsWith("bot-")) return false;
   if (String(token ?? "") !== "haw-fill-floor") return false;
-  const addr = req.socket.remoteAddress ?? "";
-  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+  return isDirectLoopback(req);
 }
+
+const CHAT_LIMIT = 12;
+const CHAT_WINDOW_MS = 10_000;
+const MOVE_LIMIT = 30;
+const MOVE_WINDOW_MS = 1_000;
+const JOIN_LIMIT = 6;
+const JOIN_WINDOW_MS = 30_000;
+
+function allowRate(bucket: WeakMap<WebSocket, { n: number; reset: number }>, ws: WebSocket, limit: number, windowMs: number) {
+  const now = Date.now();
+  const row = bucket.get(ws);
+  if (!row || row.reset < now) {
+    bucket.set(ws, { n: 1, reset: now + windowMs });
+    return true;
+  }
+  row.n += 1;
+  return row.n <= limit;
+}
+
+const chatRate = new WeakMap<WebSocket, { n: number; reset: number }>();
+const moveRate = new WeakMap<WebSocket, { n: number; reset: number }>();
+const joinRate = new WeakMap<WebSocket, { n: number; reset: number }>();
 
 function num(value: unknown, fallback = 0) {
   const n = Number(value);
@@ -697,7 +720,8 @@ function sweepLinks() {
 function roomIdOf(req: IncomingMessage) {
   try {
     const url = new URL(req.url ?? ROOM_PATH, "http://localhost");
-    return url.searchParams.get("id")?.trim() || "floor-1";
+    const raw = url.searchParams.get("id")?.trim() ?? "";
+    return /^[A-Za-z0-9._:-]{1,64}$/.test(raw) ? raw : "floor-1";
   } catch {
     return "floor-1";
   }
@@ -708,7 +732,7 @@ function attachRoom(httpServer: Server) {
   if ((httpServer as Server & { [flag]?: boolean })[flag]) return;
   (httpServer as Server & { [flag]?: boolean })[flag] = true;
 
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 
   const onUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const path = req.url?.split("?")[0];
@@ -786,6 +810,10 @@ function attachRoom(httpServer: Server) {
         const authedId = userIdForToken(token);
         const signedIn = Boolean(authedId && authedId === id) || localFillBot(id, token, req);
         const existing = room!.get(id);
+        if (existing && existing.ws !== ws && existing.signedIn && !signedIn) {
+          send(ws, { type: "error", message: "taken" });
+          return;
+        }
         const previous = existing && existing.ws !== ws ? existing.ws : null;
         const ownClaim = [...claims.values()].find((claim) => claim.peerId === id);
         const { floors: openFloors, maxFloor } = catalogOf(claims);
@@ -907,6 +935,7 @@ function attachRoom(httpServer: Server) {
         return;
       }
       if (msg.type === "move") {
+        if (!allowRate(moveRate, ws, MOVE_LIMIT, MOVE_WINDOW_MS)) return;
         const x = num(msg.x, slot.peer.x);
         const y = num(msg.y, slot.peer.y);
         const facing =
@@ -920,6 +949,7 @@ function attachRoom(httpServer: Server) {
         return;
       }
       if (msg.type === "state") {
+        if (!allowRate(moveRate, ws, MOVE_LIMIT, MOVE_WINDOW_MS)) return;
         const floor = peerFloor(slot.peer);
         const next = poseOf(msg);
         if (next.pose === "sit" && next.seatId) {
@@ -1117,6 +1147,10 @@ function attachRoom(httpServer: Server) {
         return;
       }
       if (msg.type === "whisper") {
+        if (!allowRate(chatRate, ws, CHAT_LIMIT, CHAT_WINDOW_MS)) {
+          send(ws, { type: "error", message: "slow down" });
+          return;
+        }
         if (inQuietZone(slot.peer)) {
           send(ws, { type: "error", message: "quiet — library" });
           return;
@@ -1228,6 +1262,10 @@ function attachRoom(httpServer: Server) {
         return;
       }
       if (msg.type === "chat") {
+        if (!allowRate(chatRate, ws, CHAT_LIMIT, CHAT_WINDOW_MS)) {
+          send(ws, { type: "error", message: "slow down" });
+          return;
+        }
         if (inQuietZone(slot.peer)) {
           send(ws, { type: "error", message: "quiet — library" });
           return;
@@ -1368,6 +1406,10 @@ function attachRoom(httpServer: Server) {
         return;
       }
       if (msg.type === "conf-join") {
+        if (!allowRate(joinRate, ws, JOIN_LIMIT, JOIN_WINDOW_MS)) {
+          send(ws, { type: "error", message: "slow down" });
+          return;
+        }
         const roomKey = String(msg.roomId ?? "").trim();
         const result = joinReservation(roomKey, String(msg.code ?? ""));
         if (!result.ok) {
@@ -1443,6 +1485,9 @@ export function floorRoomPlugin(): Plugin {
       return () => {
         if (server.httpServer) attachRoom(server.httpServer);
       };
+    },
+    configurePreviewServer(server) {
+      if (server.httpServer) attachRoom(server.httpServer);
     },
   };
 }
