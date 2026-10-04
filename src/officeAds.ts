@@ -3,7 +3,8 @@ import { SCALE } from "./coords";
 import type { OfficeInstance } from "./types";
 
 const AD_NAME = "office-ad";
-const OUTSET = 0.055;
+/** From the glass face toward the room so the poster hangs inside, not in the pane. */
+const OUTSET = 0.07;
 const COVER_W = 1.08;
 const COVER_H = 1.24;
 const _world = new THREE.Vector3();
@@ -142,7 +143,7 @@ function mountInteriorBackWall(group: THREE.Object3D, tex: THREE.Texture) {
   const wall = 8 * SCALE;
   const w = worldW * 0.78;
   const h = 1.28;
-  const z = worldD / 2 - wall - 0.05;
+  const z = worldD / 2 - wall - 0.07;
   const mat = adMaterial(tex);
   const root = new THREE.Group();
   root.name = AD_NAME;
@@ -174,6 +175,12 @@ function mountedOnTargets(group: THREE.Object3D, glasses: THREE.Mesh[]) {
 
 const loader = new THREE.TextureLoader();
 export const FILL_AD_PREFIX = "fill-ad:";
+/** Default interior screen when the couch is occupied and there is no window ad. */
+export const TV_ON_PREFIX = "tv-on:";
+
+export function adsOnGlass(group: THREE.Object3D) {
+  return backWallGlasses(group).length > 0;
+}
 
 const adRay = new THREE.Raycaster();
 
@@ -246,6 +253,46 @@ function makeFillAdTexture(url: string) {
   return tex;
 }
 
+function makeTvOnTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 288;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+  ctx.fillStyle = "#0a1018";
+  ctx.fillRect(0, 0, 512, 288);
+  const sky = ctx.createLinearGradient(0, 0, 0, 180);
+  sky.addColorStop(0, "#3a6ea8");
+  sky.addColorStop(1, "#1a3048");
+  ctx.fillStyle = sky;
+  ctx.fillRect(18, 16, 476, 188);
+  ctx.fillStyle = "#d8c4a0";
+  ctx.fillRect(56, 96, 92, 108);
+  ctx.fillStyle = "#2a8fd4";
+  ctx.fillRect(168, 48, 210, 118);
+  ctx.fillStyle = "#7ad0a0";
+  ctx.fillRect(392, 48, 86, 52);
+  ctx.fillStyle = "#f0c060";
+  ctx.fillRect(392, 108, 86, 58);
+  ctx.fillStyle = "#121820";
+  ctx.fillRect(0, 220, 512, 68);
+  ctx.fillStyle = "#e8f0fa";
+  ctx.fillRect(18, 232, 140, 12);
+  ctx.fillStyle = "#4aa0d8";
+  ctx.fillRect(18, 252, 320, 8);
+  ctx.fillStyle = "#8ab4d0";
+  ctx.fillRect(18, 266, 240, 6);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 export function applyOfficeAd(group: THREE.Object3D, url: string | null) {
   const prev = group.userData.officeAdUrl as string | undefined;
   if (!url) {
@@ -263,6 +310,10 @@ export function applyOfficeAd(group: THREE.Object3D, url: string | null) {
   group.userData.officeAdUrl = url;
   if (url.startsWith(FILL_AD_PREFIX)) {
     mountAd(group, makeFillAdTexture(url));
+    return;
+  }
+  if (url.startsWith(TV_ON_PREFIX)) {
+    mountAd(group, makeTvOnTexture());
     return;
   }
   if (url.startsWith("data:") || url.startsWith("blob:")) {

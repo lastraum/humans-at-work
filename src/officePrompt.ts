@@ -250,8 +250,9 @@ export function attachOfficePrompt(scene: THREE.Scene) {
       if (!hit?.uv) return null;
       const x = hit.uv.x * BUBBLE_W;
       const y = (1 - hit.uv.y) * BUBBLE_H;
-      const inYes = (x - YES.x) ** 2 + (y - YES.y) ** 2 <= YES.r ** 2;
-      const inNo = (x - NO.x) ** 2 + (y - NO.y) ** 2 <= NO.r ** 2;
+      const hitR = YES.r * 1.45;
+      const inYes = (x - YES.x) ** 2 + (y - YES.y) ** 2 <= hitR ** 2;
+      const inNo = (x - NO.x) ** 2 + (y - NO.y) ** 2 <= hitR ** 2;
       if (inYes) return "yes";
       if (inNo) return "no";
       return "bubble";

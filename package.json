@@ -13,6 +13,7 @@
     "test:gate": "npx tsx scripts/test-gate.mjs",
     "test:reservations": "npx tsx scripts/test-reservations.mjs",
     "fill:floor": "node scripts/test-fill-floor.mjs",
+    "fill:couch": "node scripts/test-fill-floor.mjs --couch",
     "teaser": "node scripts/teaser-floor.mjs",
     "vendor:assets": "./scripts/vendor-claw3d-assets.sh"
   },

@@ -1,7 +1,7 @@
 import { LOOK_PARTS, randomLook, type AvatarLook, type LookPart } from "./avatarLook";
 import type { ChatChannel, Privacy } from "./protocol";
 import { timezoneLabel } from "./conferenceReserve";
-import { chatSoundOn, playChatSound, setChatSound } from "./chatSounds";
+import { chatSoundOn, playChatSound, playUiSound, setChatSound, setUiSound, uiSoundOn } from "./chatSounds";
 import { XP_PER_MINUTE, xpRateLabel } from "./xp";
 
 type ChatTab = ChatChannel | "whisper" | "requests";
@@ -841,6 +841,15 @@ export function attachMac(opts: {
       const on = box.checked;
       setChatSound(kind, on);
       if (on) playChatSound(kind);
+    });
+  }
+  const uiBox = root.querySelector<HTMLInputElement>("#mac-sound-ui");
+  if (uiBox) {
+    uiBox.checked = uiSoundOn();
+    uiBox.addEventListener("change", () => {
+      const on = uiBox.checked;
+      setUiSound(on);
+      if (on) playUiSound("sit");
     });
   }
   chatForm.addEventListener("submit", (event) => {

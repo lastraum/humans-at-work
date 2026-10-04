@@ -115,9 +115,8 @@ const plateFixtures = (plate.avatars ?? [])
   .filter((id) => id && plateOffices.includes(id));
 
 if (plateOffices.length < 2) throw new Error(`expected offices on the plate, got ${plateOffices.length}`);
-if (plateFixtures.length !== 2) throw new Error(`expected Ada/Niko fixtures, got ${plateFixtures.join(",")}`);
-if (!plateFixtures.includes("office_04") || !plateFixtures.includes("office_19")) {
-  throw new Error("fixtures should occupy office_04 and office_19");
+if (plateFixtures.length !== 0) {
+  throw new Error(`expected no fixture bots on the plate, got ${plateFixtures.join(",")}`);
 }
 
 function plateByFloor(entries) {
@@ -131,16 +130,16 @@ const fillFloor1 = vacantOnFloor1.map((id) => claim(id));
 const fillFloor2 = plateOffices.map((id) => claim(id));
 
 if (floorIsFull(1, [], plateOffices, plateFixtures)) {
-  throw new Error("empty floor 1 with two fixtures is not full");
+  throw new Error("empty floor 1 is not full");
 }
 if (floorIsFull(1, fillFloor1.slice(0, -1), plateOffices, plateFixtures)) {
   throw new Error("one vacant office on floor 1 is not full");
 }
 if (!floorIsFull(1, fillFloor1, plateOffices, plateFixtures)) {
-  throw new Error("floor 1 fixtures plus every other office is full");
+  throw new Error("floor 1 is full when every office is claimed");
 }
-if (floorIsFull(2, fillFloor1, plateOffices, plateFixtures)) {
-  throw new Error("floor 2 fixtures do not count; fixture offices stay vacant until claimed");
+if (floorIsFull(2, fillFloor1.slice(0, -1), plateOffices, plateFixtures)) {
+  throw new Error("floor 2 is not full with a vacancy");
 }
 if (!floorIsFull(2, fillFloor2, plateOffices, plateFixtures)) {
   throw new Error("floor 2 is full only when every office is claimed");

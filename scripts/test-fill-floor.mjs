@@ -1,7 +1,8 @@
 /** Fill every office with a sitting bot so floor 1 is full and floor 2 opens.
  *
  *  Default: keep bots connected so you can clock in and ride the elevator.
- *  --once  assert overflow then disconnect
+ *  --once   assert overflow then disconnect
+ *  --couch  sit each bot on the office couch (TVs on). Privacy stays Open.
  *
  *  Requires the local Vite room: npm run dev
  *  Bots authenticate with token haw-fill-floor from loopback only.
@@ -12,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 
 const once = process.argv.includes("--once");
+const onCouch = process.argv.includes("--couch");
 const url = process.argv.find((arg) => arg.startsWith("ws")) ?? "ws://127.0.0.1:5885/__room?id=floor-1";
 const BOT_TOKEN = "haw-fill-floor";
 const NAMES = [
@@ -37,17 +39,19 @@ const fixtureIds = new Set(
   (plate.avatars ?? []).map((avatar) => String(avatar.officeId ?? "")).filter((id) => officeIds.includes(id)),
 );
 
-function occupiedSeat(office) {
-  const chair = (office.furniture ?? []).find(
-    (item) => item.type === "chair" && (item.id === "chair" || item.id === "chair_a" || !item.id),
-  );
+const ENV_SCALE = 1.2;
+const SCALE = 0.018 * ENV_SCALE;
+const COUCH_FORWARD = (-0.12 * ENV_SCALE) / SCALE;
+const COUCH_ALONG = 32;
+const COUCH_SEAT_Y = 0.38 * ENV_SCALE;
+
+function rotateLocal(office, localX, localY, localFacing, extraFacing = 0) {
   const cols = office.cols ?? 1;
   const rows = office.rows ?? 1;
   const cx = (cols * cell) / 2;
   const cy = (rows * cell) / 2;
-  const local = chair?.occupied ?? { x: chair?.x ?? cx, y: chair?.y ?? cy };
-  const dx = (local.x ?? cx) - cx;
-  const dy = (local.y ?? cy) - cy;
+  const dx = localX - cx;
+  const dy = localY - cy;
   const rot = office.rot ?? 0;
   let rx = dx;
   let ry = dy;
@@ -61,13 +65,48 @@ function occupiedSeat(office) {
     rx = dy;
     ry = -dx;
   }
-  const facing = (((chair?.facing ?? 0) + rot + 180) % 360 + 360) % 360;
+  const x = office.col * cell + cx + rx;
+  const y = office.row * cell + cy + ry;
+  const facing = (((localFacing ?? 0) + rot + extraFacing) % 360 + 360) % 360;
   return {
-    x: office.col * cell + cx + rx,
-    y: office.row * cell + cy + ry,
+    x,
+    y,
     facing,
-    col: office.col,
-    row: office.row,
+    col: Math.floor(x / cell),
+    row: Math.floor(y / cell),
+  };
+}
+
+function occupiedSeat(office) {
+  const chair = (office.furniture ?? []).find(
+    (item) => item.type === "chair" && (item.id === "chair" || item.id === "chair_a" || !item.id),
+  );
+  const cols = office.cols ?? 1;
+  const rows = office.rows ?? 1;
+  const cx = (cols * cell) / 2;
+  const cy = (rows * cell) / 2;
+  const local = chair?.occupied ?? { x: chair?.x ?? cx, y: chair?.y ?? cy };
+  return rotateLocal(office, local.x ?? cx, local.y ?? cy, chair?.facing ?? 0, 180);
+}
+
+function couchSeat(office) {
+  const couch = (office.furniture ?? []).find((item) => item.type === "couch" || String(item.type).includes("sofa"));
+  if (!couch) return null;
+  const w = couch.w ?? 100;
+  const h = couch.h ?? 40;
+  const at = rotateLocal(office, (couch.x ?? 0) + w / 2, (couch.y ?? 0) + h / 2, couch.facing ?? 0, 0);
+  const rad = (at.facing * Math.PI) / 180;
+  const along = ((at.facing + 90) * Math.PI) / 180;
+  const x = at.x + Math.sin(rad) * COUCH_FORWARD + Math.sin(along) * COUCH_ALONG;
+  const y = at.y + Math.cos(rad) * COUCH_FORWARD + Math.cos(along) * COUCH_ALONG;
+  return {
+    x,
+    y,
+    facing: at.facing,
+    col: Math.floor(x / cell),
+    row: Math.floor(y / cell),
+    seatId: couch._uid ? `${couch._uid}:a` : undefined,
+    seatY: COUCH_SEAT_Y,
   };
 }
 
@@ -95,6 +134,8 @@ function connect(id, name, extra = {}) {
           pose: extra.pose ?? "stand",
           col: extra.col,
           row: extra.row,
+          seatId: extra.seatId,
+          seatY: extra.seatY,
           token: extra.token,
         }),
       );
@@ -163,12 +204,12 @@ try {
   const vacant = offices.filter((office) => !taken.has(office.id));
 
   console.log(
-    `floor 1: ${officeIds.length} offices, ${fixtureIds.size} fixtures, ${taken.size} live claims, ${vacant.length} bots with window ads`,
+    `floor 1: ${officeIds.length} offices, ${fixtureIds.size} fixtures, ${taken.size} live claims, ${vacant.length} bots${onCouch ? " on couches" : " at desks"}`,
   );
 
   for (let i = 0; i < vacant.length; i++) {
     const office = vacant[i];
-    const seat = occupiedSeat(office);
+    const seat = onCouch ? couchSeat(office) ?? occupiedSeat(office) : occupiedSeat(office);
     const name = NAMES[i] ?? `Bot ${i + 1}`;
     const bot = await connect(`bot-${office.id}`, name, {
       ...seat,
@@ -181,6 +222,7 @@ try {
     const before = bot.msgs.length;
     bot.ws.send(JSON.stringify({ type: "claim", deskId: office.id }));
     await waitForClaim(bot, office.id, before);
+    bot.ws.send(JSON.stringify({ type: "privacy", privacy: "open" }));
     bot.ws.send(JSON.stringify({ type: "state", ...seat, pose: "sit" }));
   }
 
@@ -228,9 +270,10 @@ try {
   }
 
   console.log(
-    `bots holding ${vacant.length} offices with window ads. Nearby 6 show lamps + ad planes. Clock in, then take the elevator to 2nd floor.`,
+    onCouch
+      ? `bots holding ${vacant.length} offices Open, one person on each couch (TVs on). Ctrl+C to send them home.`
+      : `bots holding ${vacant.length} offices with window ads. Nearby 6 show lamps + ad planes. Clock in, then take the elevator to 2nd floor. Ctrl+C to send the bots home.`,
   );
-  console.log("Ctrl+C to send the bots home.");
   process.on("SIGINT", onStop);
   process.on("SIGTERM", onStop);
 } catch (err) {

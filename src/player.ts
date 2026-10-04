@@ -19,6 +19,7 @@ export function attachPlayer(opts: {
   colliderRoots: THREE.Object3D[];
   onMove?: (x: number, y: number, facing: number) => void;
   onPose?: (pose: Pose) => void;
+  onSit?: () => void;
   onClickFx?: (wx: number, wz: number) => void;
   consumeClick?: (hit: {
     wx: number;
@@ -41,6 +42,7 @@ export function attachPlayer(opts: {
     colliderRoots,
     onMove,
     onPose,
+    onSit,
     onClickFx,
     consumeClick,
     pickFirst,
@@ -118,6 +120,7 @@ export function attachPlayer(opts: {
     setAvatarPose(player, "sit");
     walk.snap({ ...seat, pose: "sit" });
     onPose?.(walk.pose());
+    onSit?.();
   };
 
   return {
@@ -166,6 +169,14 @@ export function attachPlayer(opts: {
       if (avatar.pose === "sit") {
         setAvatarPose(player, "stand");
         onPose?.(walk.pose());
+      }
+      const [sx, , sz] = toWorld(seat.x, seat.y, plate);
+      const here = Math.hypot(sx - player.position.x, sz - player.position.z);
+      // Only snap when already on the seat. Claiming from the door is ~2m and
+      // must walk; 1.6 was treating the whole office as "already there."
+      if (here < 0.55) {
+        sitNow(seat);
+        return;
       }
       const goal = walk.setCanvasGoal(seat.x, seat.y);
       if (goal) onMove?.(goal.x, goal.y, seat.facing);

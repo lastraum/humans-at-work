@@ -11318,30 +11318,7 @@
     ]
   },
   "cubicles": [],
-  "avatars": [
-    {
-      "id": "ada",
-      "pose": "sit",
-      "officeId": "office_04",
-      "col": 4,
-      "row": 0,
-      "facing": 90,
-      "x": 498.46666666666664,
-      "y": 73.29999999999995,
-      "color": "#3d7a5a"
-    },
-    {
-      "id": "niko",
-      "pose": "sit",
-      "officeId": "office_19",
-      "col": 0,
-      "row": 6,
-      "facing": 0,
-      "x": 73.30000000000007,
-      "y": 1125.8666666666666,
-      "color": "#3d5c8a"
-    }
-  ],
+  "avatars": [],
   "counts": {
     "offices": 40,
     "cubes": 24,

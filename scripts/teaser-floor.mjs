@@ -55,7 +55,8 @@ const LOOKS = {
 function sitY(type) {
   if (String(type).startsWith("stool")) return 0.435 * ENV_SCALE;
   if (type === "beanbag") return 0.36 * ENV_SCALE;
-  if (type === "couch" || type.includes("sofa") || type.startsWith("lounge")) return 0.26 * ENV_SCALE;
+  if (type === "couch" || String(type).includes("sofa")) return 0.38 * ENV_SCALE;
+  if (String(type).startsWith("lounge")) return 0.26 * ENV_SCALE;
   return 0.36 * 1.2 * ENV_SCALE;
 }
 
@@ -109,7 +110,7 @@ function officeCouch(office) {
   return {
     ...roomPoint(office, couch.x, couch.y, couch.facing ?? 0, 180),
     pose: "sit",
-    seatId: couch._uid,
+    seatId: couch._uid ? `${couch._uid}:a` : undefined,
     seatY: sitY("couch"),
   };
 }

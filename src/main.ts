@@ -13,7 +13,7 @@ import {
 } from "./createOffice";
 import { cameraPanBounds, createGround, createWallsAndDoors, setHingedDoorOpen } from "./createPlate";
 import { attachCameraPan } from "./cameraPan";
-import { applyConferencePlate, attachDesks, type Desk } from "./desks";
+import { applyConferencePlate, attachDesks, isOfficeVisitSeat, type Desk } from "./desks";
 import { pickOfficeAd } from "./officeAds";
 import { attachEditor } from "./editor";
 import { fromWorld, toWorld } from "./coords";
@@ -64,7 +64,7 @@ import {
 } from "./conferenceReserve";
 import { compressOfficeAd } from "./officeAdImage";
 import type { ConferenceReservation, OfficeAd } from "./protocol";
-import { playChatSound, playChime } from "./chatSounds";
+import { playChatSound, playChime, playUiSound } from "./chatSounds";
 import { connectWorldChat } from "./worldChat";
 import { libraryAtCell, poseInQuietZone, setAmbientSilent } from "./quietZone";
 import { GUEST_SHIFT_MS, XP_PER_MINUTE } from "./xp";
@@ -1424,6 +1424,7 @@ loadPlate()
       onKnock: (_deskId, fromId, fromName) => {
         if (blocked.has(fromId)) return;
         if (desks.mine(identity.id)?.privacy === "focus") return;
+        playUiSound("knock");
         mac.showKnock(fromName, fromId);
       },
       onKnockReply: (fromId, accept) => {
@@ -1754,6 +1755,7 @@ loadPlate()
       onMove: (x, y, facing) => room.sendMove(x, y, facing),
       onClickFx: (wx, wz) => clickVfx?.spawn(wx, wz),
       onPose: (pose) => room.sendState(pose),
+      onSit: () => playUiSound("sit"),
       pickFirst: (pointer) => {
         const hit = prompt.pick(camera, pointer);
         if (hit === "yes" && prompt.kind === "leave") {
@@ -1778,6 +1780,7 @@ loadPlate()
           }
           const desk = prompt.desk;
           prompt.hide();
+          playUiSound("knock");
           room.sendKnock(desk.id);
           status.textContent = "knocked";
           return true;
@@ -1816,13 +1819,12 @@ loadPlate()
         });
         if (sitHit) {
           const visitClaim = sitHit.desk ? desks.claimOf(sitHit.desk.id) : undefined;
+          const foreign = Boolean(visitClaim && visitClaim.peerId !== identity.id);
           const openVisit = Boolean(
-            visitClaim &&
-              visitClaim.peerId !== identity.id &&
-              visitClaim.privacy === "open" &&
-              !barredFrom(visitClaim.peerId),
+            foreign && visitClaim && visitClaim.privacy === "open" && !barredFrom(visitClaim.peerId),
           );
-          if (openVisit) return false;
+          const visitSeat = openVisit && isOfficeVisitSeat(sitHit.type);
+          if (foreign && !visitSeat) return false;
           if (sitHit.occupied) {
             status.textContent = "that seat is taken";
             return true;
@@ -1835,7 +1837,13 @@ loadPlate()
             return true;
           }
           const lounge = !sitHit.desk;
-          if (lounge) {
+          if (lounge || visitSeat) {
+            playUiSound("click");
+            if (prompt.kind === "sit" && prompt.seat?.seatId && prompt.seat.seatId === sitHit.seat.seatId) {
+              playerCtl?.goSit(sitHit.seat);
+              prompt.hide();
+              return true;
+            }
             const [wx, , wz] = toWorld(sitHit.seat.x, sitHit.seat.y, plate);
             prompt.showSit(null, sitHit.seat, wx, wz, sitHit.type);
             return true;
@@ -1849,6 +1857,14 @@ loadPlate()
             return true;
           }
           if (mine) {
+            playUiSound("click");
+            const sameSeat =
+              prompt.kind === "sit" && prompt.seat?.seatId && prompt.seat.seatId === sitHit.seat.seatId;
+            if (sameSeat || sitHit.type === "chair") {
+              playerCtl?.goSit(sitHit.seat);
+              prompt.hide();
+              return true;
+            }
             const [wx, , wz] = toWorld(sitHit.seat.x, sitHit.seat.y, plate);
             prompt.showSit(desk, sitHit.seat, wx, wz, sitHit.type);
             return true;
@@ -1900,6 +1916,7 @@ loadPlate()
                 return true;
               }
               const [wx, , wz] = toWorld(at.x, at.y, plate);
+              playUiSound("click");
               prompt.showKnock(desk, wx, wz);
               pendingKnock = null;
               return true;
@@ -2668,6 +2685,8 @@ function simulate(dt: number) {
       y: you.y,
       col: you.col,
       row: you.row,
+      pose: you.pose,
+      seatId: you.seatId,
     });
   }
   desksCtl.refresh(poses);
@@ -2710,6 +2729,7 @@ function simulate(dt: number) {
           status.textContent = "Sign in to knock.";
         } else {
           const [wx, , wz] = toWorld(at.x, at.y, livePlate);
+          playUiSound("click");
           promptCtl.showKnock(desk, wx, wz);
         }
       }
@@ -2735,12 +2755,18 @@ function simulate(dt: number) {
   }
 }
 
+function seatIdsHeld(sitterSeat?: string) {
+  if (!sitterSeat) return [] as string[];
+  if (/:[ab]$/.test(sitterSeat)) return [sitterSeat];
+  return [sitterSeat, `${sitterSeat}:a`];
+}
+
 function seatTakenBy(seatId?: string) {
   if (!seatId) return null;
   const you = playerCtl?.pose();
-  if (you?.pose === "sit" && you.seatId === seatId) return selfId || "you";
+  if (you?.pose === "sit" && seatIdsHeld(you.seatId).includes(seatId)) return selfId || "you";
   for (const peer of remotesCtl?.poses() ?? []) {
-    if (peer.pose === "sit" && peer.seatId === seatId) return peer.id;
+    if (peer.pose === "sit" && seatIdsHeld(peer.seatId).includes(seatId)) return peer.id;
   }
   return null;
 }
@@ -2959,16 +2985,6 @@ function tick(render: boolean) {
     const personHover = remotesCtl?.pick(camera, pointer);
     const adHover =
       !personHover && desksCtl ? pickOfficeAd(camera, pointer, [scene.getObjectByName("offices") ?? scene]) : null;
-    if (personHover) {
-      canvas.style.cursor = "pointer";
-      status.textContent = personHover.name;
-    } else if (adHover) {
-      canvas.style.cursor = "pointer";
-      const who = desksCtl?.claimOf(adHover.deskId);
-      status.textContent = who ? `${who.name}${who.company ? ` · ${who.company}` : ""} · visit` : "window ad";
-    } else {
-      canvas.style.cursor = "";
-    }
     const sitHover = desksCtl?.pickSeat(camera, pointer, (seatId) => {
       const who = seatTakenBy(seatId);
       return Boolean(who && who !== selfId && who !== "you");
@@ -2981,12 +2997,24 @@ function tick(render: boolean) {
         !blocked.has(sitClaim.peerId) &&
         !blockedBy.has(sitClaim.peerId),
     );
+    const visitSeat = Boolean(openVisit && sitHover && isOfficeVisitSeat(sitHover.type));
     const canSit = Boolean(
       sitHover &&
         !sitHover.occupied &&
-        !openVisit &&
-        (!sitHover.desk || (sitClaim && sitClaim.peerId === selfId)),
+        (visitSeat || (!openVisit && (!sitHover.desk || (sitClaim && sitClaim.peerId === selfId)))),
     );
+    if (personHover) {
+      canvas.style.cursor = "pointer";
+      status.textContent = personHover.name;
+    } else if (adHover) {
+      canvas.style.cursor = "pointer";
+      const who = desksCtl?.claimOf(adHover.deskId);
+      status.textContent = who ? `${who.name}${who.company ? ` · ${who.company}` : ""} · visit` : "window ad";
+    } else if (canSit) {
+      canvas.style.cursor = "pointer";
+    } else {
+      canvas.style.cursor = "";
+    }
     if (personHover) {
       /* whisper hover already set */
     } else if (sitHover?.occupied && !openVisit) {

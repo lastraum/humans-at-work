@@ -1,14 +1,16 @@
-/** Short tones for messages from other people. One switch per channel. */
+/** Short tones for chat, shift chimes, and seat/knock ticks. */
 
 export type ChatSound = "floor" | "office" | "whisper";
+export type UiSound = "click" | "sit" | "knock";
 
 const KEY: Record<ChatSound, string> = {
   floor: "haw-sound-floor",
   office: "haw-sound-office",
   whisper: "haw-sound-whisper",
 };
+const UI_KEY = "haw-sound-ui";
 
-type Tone = { freq: number; at: number; dur: number; gain: number };
+type Tone = { freq: number; at: number; dur: number; gain: number; wave?: OscillatorType };
 
 const TONES: Record<ChatSound, Tone[]> = {
   floor: [
@@ -42,6 +44,22 @@ const CHIMES: Record<"shift" | "claim" | "clockout", Tone[]> = {
   ],
 };
 
+/** Click a chair, sit down, knock on a busy door. Quieter than chat. */
+const UI_TONES: Record<UiSound, Tone[]> = {
+  click: [
+    { freq: 880, at: 0, dur: 0.045, gain: 0.08 },
+    { freq: 1174, at: 0.03, dur: 0.055, gain: 0.06 },
+  ],
+  sit: [
+    { freq: 262, at: 0, dur: 0.07, gain: 0.09, wave: "triangle" },
+    { freq: 196, at: 0.05, dur: 0.1, gain: 0.07, wave: "triangle" },
+  ],
+  knock: [
+    { freq: 196, at: 0, dur: 0.05, gain: 0.13, wave: "triangle" },
+    { freq: 174, at: 0.12, dur: 0.06, gain: 0.11, wave: "triangle" },
+  ],
+};
+
 let ctx: AudioContext | null = null;
 
 export function chatSoundOn(kind: ChatSound) {
@@ -55,6 +73,22 @@ export function chatSoundOn(kind: ChatSound) {
 export function setChatSound(kind: ChatSound, on: boolean) {
   try {
     localStorage.setItem(KEY[kind], on ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+export function uiSoundOn() {
+  try {
+    return localStorage.getItem(UI_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+export function setUiSound(on: boolean) {
+  try {
+    localStorage.setItem(UI_KEY, on ? "1" : "0");
   } catch {
     /* ignore */
   }
@@ -77,7 +111,7 @@ function schedule(audio: AudioContext, tones: Tone[]) {
   for (const tone of tones) {
     const osc = audio.createOscillator();
     const gain = audio.createGain();
-    osc.type = "sine";
+    osc.type = tone.wave ?? "sine";
     osc.frequency.value = tone.freq;
     const start = now + tone.at;
     gain.gain.setValueAtTime(0.0001, start);
@@ -110,6 +144,11 @@ export function playChatSound(kind: ChatSound) {
 
 export function playChime(kind: keyof typeof CHIMES) {
   playTones(CHIMES[kind]);
+}
+
+export function playUiSound(kind: UiSound) {
+  if (!uiSoundOn()) return;
+  playTones(UI_TONES[kind], uiSoundOn);
 }
 
 window.addEventListener("pointerdown", unlockChatSounds);
