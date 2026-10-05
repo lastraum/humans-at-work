@@ -1,4 +1,5 @@
 import "./style.css";
+import { bindMobileChrome } from "./mobileChrome";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import plateJson from "../data/floor-plate.json";
@@ -73,6 +74,7 @@ import { GUEST_SHIFT_MS, XP_PER_MINUTE } from "./xp";
 import type { Avatar, FloorPlate, OfficeInstance } from "./types";
 
 document.body.classList.add("ready");
+bindMobileChrome();
 
 function postLook(body: { id?: string; retire?: string }) {
   void fetch("/__presence/look", {
@@ -2422,6 +2424,8 @@ function resize() {
   camera.top = frustum;
   camera.bottom = -frustum;
   camera.updateProjectionMatrix();
+  const worldH = (camera.top - camera.bottom) / Math.max(camera.zoom, 0.001);
+  promptCtl?.fitTouch(h / Math.max(worldH, 0.001));
 }
 
 function simulate(dt: number) {

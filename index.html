@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>Humans at Work — floor plate</title>
     <style>
       html,
@@ -10,6 +10,9 @@
         margin: 0;
         height: 100%;
         background: #16122a;
+        overflow: hidden;
+        overscroll-behavior: none;
+        touch-action: none;
       }
       body:not(.ready) > :not(#boot) {
         display: none !important;
@@ -248,7 +251,7 @@
               <p id="mac-chat-office-hint" class="mac-hint" hidden>Walk into an office to talk in this room.</p>
               <p id="mac-chat-whisper-hint" class="mac-hint" hidden>Click someone on the floor, or wait for a request.</p>
               <form id="mac-chat-form">
-                <input id="mac-chat-input" maxlength="200" placeholder="Message the floor…" autocomplete="off" />
+                <input id="mac-chat-input" maxlength="200" placeholder="Message the floor…" autocomplete="off" enterkeyhint="send" />
                 <button type="submit">Send</button>
               </form>
             </div>
@@ -277,7 +280,7 @@
         </div>
         <div class="mac-panel" id="mac-help" hidden>
           <div class="mac-well mac-help">
-            <p><b>Walk.</b> Click the floor to move. WASD or the pad moves the camera. Q and E turn it.</p>
+            <p><b>Walk.</b> Click or tap the floor to move. WASD or the pad moves the camera. Q and E turn it.</p>
             <p><b>Office.</b> Sign in to claim one. Your name goes on the door. Open lets people drop by, Busy shuts the door, Focus darkens the glass. Knock when the door is shut. A window ad can show while you are on shift.</p>
             <p><b>Elevator.</b> Ride to another floor, leave your office, or end the shift. Ending the shift takes you outside and stops the clock.</p>
             <p><b>People.</b> Click someone to see their card. Block hides their chat and knocks, and keeps them out of your office.</p>

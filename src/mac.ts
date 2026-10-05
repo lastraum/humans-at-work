@@ -135,9 +135,18 @@ export function attachMac(opts: {
     if (id === "mac-chat") paintChat();
   };
 
-  closeBtn.addEventListener("click", () => {
+  const toggleCollapsed = () => {
     root.classList.toggle("collapsed");
     syncSplit();
+  };
+  closeBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleCollapsed();
+  });
+  const coarsePointer = window.matchMedia("(pointer: coarse)");
+  root.querySelector(".mac-title")?.addEventListener("click", () => {
+    if (!coarsePointer.matches) return;
+    toggleCollapsed();
   });
   icons.forEach((icon) => {
     icon.addEventListener("click", () => {

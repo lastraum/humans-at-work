@@ -243,6 +243,21 @@ export function attachOfficePrompt(scene: THREE.Scene) {
       kind = null;
       root.visible = false;
     },
+    /** Grow the yes/no bubble on touch screens so the buttons are finger-sized. */
+    fitTouch(pxPerWorld: number) {
+      const coarse = window.matchMedia("(pointer: coarse)").matches;
+      const baseW = 2.45;
+      const baseH = 1.52;
+      let mul = 1;
+      if (coarse && pxPerWorld > 0) {
+        const buttonPx = 2 * YES.r * (baseW / BUBBLE_W) * pxPerWorld;
+        if (buttonPx < 36) mul = Math.min(1.7, 36 / buttonPx);
+      }
+      const key = `${coarse ? 1 : 0}:${mul.toFixed(3)}`;
+      if (bubble.userData.fitKey === key) return;
+      bubble.userData.fitKey = key;
+      bubble.scale.set(baseW * mul, baseH * mul, 1);
+    },
     pick(camera: THREE.Camera, pointer: THREE.Vector2): "yes" | "no" | "bubble" | null {
       if (!root.visible) return null;
       raycaster.setFromCamera(pointer, camera);
@@ -250,7 +265,8 @@ export function attachOfficePrompt(scene: THREE.Scene) {
       if (!hit?.uv) return null;
       const x = hit.uv.x * BUBBLE_W;
       const y = (1 - hit.uv.y) * BUBBLE_H;
-      const hitR = YES.r * 1.45;
+      const coarse = window.matchMedia("(pointer: coarse)").matches;
+      const hitR = YES.r * (coarse ? 1.65 : 1.45);
       const inYes = (x - YES.x) ** 2 + (y - YES.y) ** 2 <= hitR ** 2;
       const inNo = (x - NO.x) ** 2 + (y - NO.y) ** 2 <= hitR ** 2;
       if (inYes) return "yes";

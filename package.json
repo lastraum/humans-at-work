@@ -15,6 +15,7 @@
     "test:gate": "npx tsx scripts/test-gate.mjs",
     "test:reservations": "npx tsx scripts/test-reservations.mjs",
     "test:auth": "npx tsx scripts/test-supabase-auth.mjs",
+    "test:mobile": "node scripts/test-mobile-layout.mjs",
     "fill:floor": "node scripts/test-fill-floor.mjs",
     "fill:couch": "node scripts/test-fill-floor.mjs --couch",
     "teaser": "node scripts/teaser-floor.mjs",
@@ -33,6 +34,7 @@
   "devDependencies": {
     "@types/three": "^0.170.0",
     "@types/ws": "^8.18.1",
+    "puppeteer-core": "^25.12.0",
     "typescript": "^5.6.3",
     "vite": "^6.0.3"
   }
