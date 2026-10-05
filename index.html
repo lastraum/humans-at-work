@@ -3,7 +3,27 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
-    <title>Humans at Work — floor plate</title>
+    <title>Humans at Work</title>
+    <meta
+      name="description"
+      content="A simple place to work and chat next to humans from around the world. Body doubling in a walkable office, chat like AIM, no cameras. Claim an office. XP for time clocked in."
+    />
+    <link rel="canonical" href="https://humansat.work/" />
+    <meta name="theme-color" content="#16122a" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Humans at Work" />
+    <meta property="og:url" content="https://humansat.work/" />
+    <meta property="og:title" content="Humans at Work" />
+    <meta
+      property="og:description"
+      content="A simple place to work and chat next to humans from around the world. Body doubling in a walkable office, chat like AIM, no cameras. Claim an office. XP for time clocked in."
+    />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Humans at Work" />
+    <meta
+      name="twitter:description"
+      content="A simple place to work and chat next to humans from around the world. Body doubling in a walkable office, chat like AIM, no cameras. Claim an office. XP for time clocked in."
+    />
     <style>
       html,
       body {
@@ -218,8 +238,9 @@
             <label><input type="radio" name="mac-privacy" value="open" checked disabled /> Open — door ajar, drop by</label>
             <label><input type="radio" name="mac-privacy" value="busy" disabled /> Busy — door shut, no walk-in</label>
             <label><input type="radio" name="mac-privacy" value="focus" disabled /> Focus — dark glass, do not disturb</label>
+            <label><input type="radio" name="mac-privacy" value="private" disabled /> Private — door shut, people inside stay</label>
           </div>
-          <p id="mac-privacy-hint">Claim an office to set this. Busy and Focus ignore new whispers. Available for whispers is under Chat.</p>
+          <p id="mac-privacy-hint">Claim an office to set this. Busy, Focus, and Private ignore new whispers. Available for whispers is under Chat.</p>
           <button type="button" id="mac-boot" disabled>Boot everyone</button>
         </div>
         <div id="mac-alert" hidden>
@@ -238,7 +259,7 @@
           <div class="mac-chat-main">
             <div class="mac-chat-nav">
               <div id="mac-whisper-people" class="mac-whisper-people"></div>
-              <label class="mac-check" id="mac-chat-available-wrap" title="Others can send a whisper request while this is on. Busy and Focus still ignore new ones.">
+                <label class="mac-check" id="mac-chat-available-wrap" title="Others can send a whisper request while this is on. Busy, Focus, and Private still ignore new ones.">
                 <input type="checkbox" id="mac-chat-available" /> Available for whispers
               </label>
             </div>
@@ -281,10 +302,10 @@
         <div class="mac-panel" id="mac-help" hidden>
           <div class="mac-well mac-help">
             <p><b>Walk.</b> Click or tap the floor to move. WASD or the pad moves the camera. Q and E turn it.</p>
-            <p><b>Office.</b> Sign in to claim one. Your name goes on the door. Open lets people drop by, Busy shuts the door, Focus darkens the glass. Knock when the door is shut. A window ad can show while you are on shift.</p>
+            <p><b>Office.</b> Sign in to claim one. Your name goes on the door. Open lets people drop by, Busy shuts the door, Focus darkens the glass, Private shuts the door and keeps whoever is already inside. Knock when the door is Busy. A window ad can show while you are on shift.</p>
             <p><b>Elevator.</b> Ride to another floor, leave your office, or end the shift. Ending the shift takes you outside and stops the clock.</p>
             <p><b>People.</b> Click someone to see their card. Block hides their chat and knocks, and keeps them out of your office.</p>
-            <p><b>Talk.</b> Floor chat is open. For a private thread, turn on Available for whispers in Chat, then click a person. A whisper ends when either of you clocks out. Busy and Focus ignore new whispers.</p>
+            <p><b>Talk.</b> Floor chat is open. For a private thread, turn on Available for whispers in Chat, then click a person. A whisper ends when either of you clocks out. Busy, Focus, and Private ignore new whispers.</p>
             <p><b>Sit.</b> Click a chair to sit. An Open office lets you sit on the couch and extra chairs. The kitchen and the rec room are for sitting. The library is silent, so floor chat waits until you step out.</p>
             <p><b>Conference.</b> Book 30 or 60 minutes. An open session lets anyone walk in. A code session needs the door code.</p>
             <p id="mac-help-xp"><b>XP.</b></p>

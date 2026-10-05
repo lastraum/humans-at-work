@@ -62,6 +62,7 @@ export type RoomHandlers = {
   onKnock?: (deskId: string, fromId: string, fromName: string) => void;
   onKnockReply?: (fromId: string, accept: boolean, deskId: string) => void;
   onBoot?: (deskId: string, peerId: string) => void;
+  onOfficeKick?: (deskId: string) => void;
   onBlocked?: (byId: string) => void;
   onUnblocked?: (byId: string) => void;
   onError?: (message: string, deskId?: string) => void;
@@ -227,6 +228,10 @@ export function connectRoom(opts: RoomHandlers) {
     }
     if (msg.type === "boot") {
       opts.onBoot?.(msg.deskId, msg.peerId);
+      return;
+    }
+    if (msg.type === "office-kick") {
+      opts.onOfficeKick?.(msg.deskId);
       return;
     }
     if (msg.type === "blocked") {

@@ -43,7 +43,8 @@ import { DCL_WORLD } from "./dcl/worldHandshake";
 import { addBlocked, readBlocked, removeBlocked, writeBlocked } from "./blocks";
 import { applyAccount, clearAccountEmail, ensureIdentity, saveIdentity, sanitizeName } from "./identity";
 import { attachMac } from "./mac";
-import { clampCompany, clampProfileUrl, type Privacy } from "./protocol";
+import { canStayInPrivate, cellInsideFootprint, doorOutsideCell } from "./privateOffice";
+import { blocksWhispers, clampCompany, clampProfileUrl, privacyLabel, type Privacy } from "./protocol";
 import { loadFurniture } from "./loadFurniture";
 import { attachClickVfx } from "./clickVfx";
 import { attachOfficePrompt } from "./officePrompt";
@@ -853,6 +854,15 @@ loadPlate()
       if (!conf) return false;
       return !canEnterConference(reservations, conf.id, identity.id);
     };
+    const privateBlocked = (col: number, row: number) => {
+      const desk = desks.atCell(col, row);
+      if (!desk) return false;
+      const claim = desks.claimOf(desk.id);
+      if (!claim) return false;
+      return !canStayInPrivate(claim, identity.id);
+    };
+    const movementBlocked = (col: number, row: number) => conferenceBlocked(col, row) || privateBlocked(col, row);
+    const syncBlocks = () => playerCtl?.setCellBlocked(movementBlocked);
     confHoverLabel = (col, row) => {
       if (libraryAtCell(plate, col, row)) return "Library";
       const conf = conferenceAtCell(plate, col, row);
@@ -1120,6 +1130,7 @@ loadPlate()
         desks.applyAll(claims);
         for (const claim of claims) noteClaim(claim);
         for (const ad of officeAds ?? []) applyDeskAd(ad.deskId, ad.peerId, ad);
+        syncBlocks();
         paintFloorRoster();
         syncMacDesk();
         paintFloorHud();
@@ -1156,6 +1167,7 @@ loadPlate()
         desks.applyAll(view.claims);
         for (const claim of view.claims) noteClaim(claim);
         for (const ad of view.officeAds ?? []) applyDeskAd(ad.deskId, ad.peerId, ad);
+        syncBlocks();
         paintFloorRoster();
         syncMacDesk();
         paintFloorHud();
@@ -1223,7 +1235,7 @@ loadPlate()
       onReservations: (list) => {
         reservations = list;
         paintConfBadges();
-        playerCtl?.setCellBlocked(conferenceBlocked);
+        syncBlocks();
         confReserve?.refresh();
       },
       onReserve: (reservation) => {
@@ -1237,7 +1249,7 @@ loadPlate()
           },
         ];
         paintConfBadges();
-        playerCtl?.setCellBlocked(conferenceBlocked);
+        syncBlocks();
         confReserve?.refresh();
         if (reservation.peerId === identity.id) {
           status.textContent =
@@ -1250,7 +1262,7 @@ loadPlate()
       onCancelReserve: (id) => {
         reservations = reservations.filter((row) => row.id !== id);
         paintConfBadges();
-        playerCtl?.setCellBlocked(conferenceBlocked);
+        syncBlocks();
         confReserve?.refresh();
         status.textContent = "reservation canceled";
       },
@@ -1259,7 +1271,7 @@ loadPlate()
           row.id === reservationId ? { ...row, admitted: true } : row,
         );
         paintConfBadges();
-        playerCtl?.setCellBlocked(conferenceBlocked);
+        syncBlocks();
         const room = (plate.conferences ?? []).find((item) => item.id === roomId);
         if (room) {
           const at = conferenceCenter(room, plate);
@@ -1268,19 +1280,28 @@ loadPlate()
         confReserve?.hideJoin();
         status.textContent = "conference unlocked";
       },
+      onOfficeKick: (deskId) => {
+        const desk = desks.get(deskId);
+        if (!desk) return;
+        const at = canvasExit(desk, plate.grid.cellSize, desks.approach(desk));
+        prompt.hide();
+        playerCtl?.goTo(at.x, at.y, true);
+        status.textContent = "private office";
+      },
       onConfKick: (roomId, reason) => {
         const group = confGroup(roomId);
         const at = group
           ? conferenceApproach(group, plate)
           : { x: 0, y: 0 };
         if (group) playerCtl?.goTo(at.x, at.y, true);
-        playerCtl?.setCellBlocked(conferenceBlocked);
+        syncBlocks();
         paintConfBadges();
         status.textContent = reason === "ended" ? "conference ended" : "conference is locked";
       },
       onClaim: (claim) => {
         noteClaim(claim);
         desks.apply(claim);
+        syncBlocks();
         paintFloorRoster();
         syncMacDesk();
         if (claim.peerId !== identity.id) {
@@ -1290,6 +1311,7 @@ loadPlate()
       },
       onRelease: (deskId) => {
         desks.release(deskId);
+        syncBlocks();
         paintFloorRoster();
         syncMacDesk();
       },
@@ -1333,7 +1355,8 @@ loadPlate()
       },
       onKnock: (_deskId, fromId, fromName) => {
         if (blocked.has(fromId)) return;
-        if (desks.mine(identity.id)?.privacy === "focus") return;
+        const minePrivacy = desks.mine(identity.id)?.privacy;
+        if (minePrivacy === "focus" || minePrivacy === "private") return;
         playUiSound("knock");
         mac.showKnock(fromName, fromId);
       },
@@ -1506,13 +1529,7 @@ loadPlate()
 
     const personProfile = (peerId: string) => {
       const claim = desks.mine(peerId);
-      const mode = claim
-        ? claim.privacy === "focus"
-          ? "Focus"
-          : claim.privacy === "busy"
-            ? "Busy"
-            : "Open"
-        : "Walking the floor";
+      const mode = claim ? privacyLabel(claim.privacy) : "Walking the floor";
       const desk = claim ? desks.get(claim.deskId) : undefined;
       const deskLabel = desk ? desks.pretty(desk) : "No desk";
       const available = chatAvailable.get(peerId) === true;
@@ -1529,7 +1546,7 @@ loadPlate()
       if (!peerId || peerId === identity.id) return "that's you";
       if (blocked.has(peerId) || blockedBy.has(peerId)) return "you can't whisper them";
       const claim = desks.mine(peerId);
-      if (claim?.privacy === "busy" || claim?.privacy === "focus") return "they're not taking whispers";
+      if (claim && blocksWhispers(claim.privacy)) return "they're not taking whispers";
       if (chatAvailable.get(peerId) !== true) return "they're not available for whispers";
       return null;
     };
@@ -1814,6 +1831,12 @@ loadPlate()
             pendingKnock = null;
             return true;
           }
+          if (claim.privacy === "private" && !canStayInPrivate(claim, identity.id)) {
+            const at = canvasExit(desk, plate.grid.cellSize, desks.approach(desk));
+            playerCtl?.goTo(at.x, at.y);
+            pendingKnock = null;
+            return true;
+          }
           if (claim.privacy === "busy") {
             const at = desks.approach(desk);
             const you = playerCtl?.pose();
@@ -1848,7 +1871,7 @@ loadPlate()
         return true;
       },
     });
-    playerCtl.setCellBlocked(conferenceBlocked);
+    playerCtl.setCellBlocked(movementBlocked);
     syncConferencePresence = (you) => {
       const col = you.col ?? Math.floor(you.x / plate.grid.cellSize);
       const row = you.row ?? Math.floor(you.y / plate.grid.cellSize);
@@ -2263,13 +2286,21 @@ loadPlate()
       onPrivacy: (privacy: Privacy) => {
         const mine = desks.mine(identity.id);
         if (!mine) return;
+        if (privacy === "private" && !isSignedIn()) {
+          askAccount("Sign in to set Private.");
+          mac.setPrivacy(mine.privacy);
+          return;
+        }
         mine.privacy = privacy;
+        if (privacy !== "private") delete mine.admitted;
         desks.apply(mine);
         room.sendPrivacy(privacy);
         mac.setPrivacy(privacy);
+        syncBlocks();
         if (privacy === "focus" || privacy === "busy") {
           evictDesk(mine.deskId, identity.id);
         }
+        if (privacy === "private") status.textContent = "private";
       },
       hasDesk: () => Boolean(desks.mine(identity.id)),
       signedIn: isSignedIn,
@@ -2428,6 +2459,22 @@ function resize() {
   promptCtl?.fitTouch(h / Math.max(worldH, 0.001));
 }
 
+function canvasExit(desk: Desk, cell: number, approach: { x: number; y: number }) {
+  const col = Math.floor(approach.x / cell);
+  const row = Math.floor(approach.y / cell);
+  const inst = desk.instance;
+  if (!cellInsideFootprint(col, row, inst)) return approach;
+  const spot = doorOutsideCell({
+    col: inst.col,
+    row: inst.row,
+    cols: inst.cols,
+    rows: inst.rows,
+    rot: inst.rot,
+    doorEdge: "s",
+  });
+  return { x: (spot.col + 0.5) * cell, y: (spot.row + 0.5) * cell };
+}
+
 function simulate(dt: number) {
   camCtl?.update(Math.min(dt, 0.05));
   playerCtl?.update(dt);
@@ -2459,8 +2506,16 @@ function simulate(dt: number) {
     const col = you.col ?? Math.floor(you.x / livePlate.grid.cellSize);
     const row = you.row ?? Math.floor(you.y / livePlate.grid.cellSize);
     const here = desksCtl.atCell(col, row);
-    if (here) macCtl?.setChatRoom(here.id);
-    else syncConferencePresence?.(you);
+    if (here) {
+      macCtl?.setChatRoom(here.id);
+      const claim = desksCtl.claimOf(here.id);
+      if (claim && selfId && !canStayInPrivate(claim, selfId) && playerCtl && !playerCtl.moving()) {
+        const at = canvasExit(here, livePlate.grid.cellSize, desksCtl.approach(here));
+        promptCtl?.hide();
+        playerCtl.goTo(at.x, at.y, true);
+        status.textContent = "private office";
+      }
+    } else syncConferencePresence?.(you);
     const quiet = poseInQuietZone(livePlate, you);
     if (quiet !== lastQuiet) {
       lastQuiet = quiet;
@@ -2691,7 +2746,7 @@ function updateOfficePeek(desk: Desk | null, kind?: string) {
   const fixture = desksCtl?.fixture(desk.id);
   peekEl.classList.toggle("vacant", !claim && !fixture);
   if (claim) {
-    const mode = claim.privacy === "focus" ? "Focus" : claim.privacy === "busy" ? "Busy" : "Open";
+    const mode = privacyLabel(claim.privacy);
     peekName.textContent = claim.name;
     peekMeta.textContent = `${mode} · ${workTime(claim.since)}`;
     return;
