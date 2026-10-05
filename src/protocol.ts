@@ -35,7 +35,7 @@ export type Peer = {
 
 export type DeskKind = "office" | "cubicle";
 
-export type Privacy = "open" | "busy" | "focus";
+export type Privacy = "open" | "busy" | "focus" | "private";
 
 /** Floor is everyone. Office is only peers whose pose is inside that desk. */
 export type ChatChannel = "floor" | "office";
@@ -78,6 +78,11 @@ export type Claim = {
   peerId: string;
   name: string;
   privacy: Privacy;
+  /**
+   * Peer ids still allowed inside a Private office. Present only while privacy
+   * is private. The claimer is always included and may leave and come back.
+   */
+  admitted?: string[];
   /** Unix ms when they checked in. */
   since: number;
   /** Story floor this desk occupies. Same plate; occupancy is per floor. */
@@ -139,6 +144,7 @@ export type ServerMsg =
   | { type: "knock"; deskId: string; fromId: string; fromName: string }
   | { type: "knock-reply"; fromId: string; accept: boolean; deskId: string }
   | { type: "boot"; deskId: string; peerId: string }
+  | { type: "office-kick"; deskId: string }
   | { type: "blocked"; byId: string }
   | { type: "unblocked"; byId: string }
   | { type: "reservations"; reservations: ConferenceReservation[] }
@@ -150,7 +156,19 @@ export type ServerMsg =
   | { type: "error"; message: string; deskId?: string };
 
 export function clampPrivacy(value: unknown): Privacy {
-  return value === "busy" || value === "focus" ? value : "open";
+  return value === "busy" || value === "focus" || value === "private" ? value : "open";
+}
+
+export function privacyLabel(privacy: string) {
+  if (privacy === "busy") return "Busy";
+  if (privacy === "focus") return "Focus";
+  if (privacy === "private") return "Private";
+  return "Open";
+}
+
+/** Busy, Focus, and Private do not take new whispers. Open does. */
+export function blocksWhispers(privacy: string) {
+  return privacy === "busy" || privacy === "focus" || privacy === "private";
 }
 
 export const ROOM_PATH = "/__room";

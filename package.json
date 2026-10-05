@@ -10,6 +10,7 @@
     "build:prod": "bash scripts/deploy-prod.sh",
     "generate:floor": "node scripts/generate-floor-plate.mjs",
     "test:floors": "npx tsx scripts/test-floors.mjs",
+    "test:privacy": "npx tsx scripts/test-privacy.mjs",
     "test:xp": "npx tsx scripts/test-xp.mjs",
     "test:link": "npx tsx scripts/test-link.mjs",
     "test:gate": "npx tsx scripts/test-gate.mjs",
