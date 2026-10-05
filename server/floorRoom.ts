@@ -19,10 +19,12 @@ import {
   type Peer,
   type Pose,
   type ServerMsg,
+  blocksWhispers,
   clampCompany,
   clampPrivacy,
   clampProfileUrl,
 } from "../src/protocol";
+import { canStayInPrivate, cellInsideFootprint, clampAdmitted, doorOutsideCell } from "../src/privateOffice";
 import { FIRST_FLOOR, groupClaimsByFloor, selectableFloors, sameFloors } from "../src/floors";
 import { officeAdForPeer, setUserBlock, userBlocks, userIdForToken, whoBlocked } from "./auth";
 import { isDirectLoopback } from "./net";
@@ -62,11 +64,41 @@ const whispersByRoom = new Map<string, Map<string, WhisperPair>>();
 const seatsByRoom = new Map<string, Map<string, string>>();
 const REPLACED = 4001;
 
-type DeskFootprint = { id: string; col: number; row: number; cols: number; rows: number };
+type DeskFootprint = {
+  id: string;
+  col: number;
+  row: number;
+  cols: number;
+  rows: number;
+  rot: number;
+  doorEdge?: string;
+};
+
+function footprintOf(desk: {
+  id?: string;
+  col?: number;
+  row?: number;
+  cols?: number;
+  rows?: number;
+  rot?: number;
+  furniture?: { type?: string; doorEdge?: string }[];
+}): DeskFootprint {
+  const door = desk.furniture?.find((item) => item.type === "door");
+  return {
+    id: String(desk.id),
+    col: Number(desk.col) || 0,
+    row: Number(desk.row) || 0,
+    cols: Number(desk.cols) || 1,
+    rows: Number(desk.rows) || 1,
+    rot: Number(desk.rot) || 0,
+    doorEdge: door?.doorEdge,
+  };
+}
 
 function loadDeskFootprints(): {
   cell: number;
   desks: DeskFootprint[];
+  footprints: Map<string, DeskFootprint>;
   officeIds: string[];
   fixtureIds: string[];
 } {
@@ -75,28 +107,70 @@ function loadDeskFootprints(): {
       readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../data/floor-plate.json"), "utf8"),
     ) as {
       grid?: { cellSize?: number };
-      offices?: DeskFootprint[];
-      cubicles?: DeskFootprint[];
+      legend?: Record<string, string>;
+      cells?: string[];
+      offices?: {
+        id?: string;
+        col?: number;
+        row?: number;
+        cols?: number;
+        rows?: number;
+        rot?: number;
+        furniture?: { type?: string; doorEdge?: string }[];
+      }[];
+      cubicles?: {
+        id?: string;
+        col?: number;
+        row?: number;
+        cols?: number;
+        rows?: number;
+        rot?: number;
+        furniture?: { type?: string; doorEdge?: string }[];
+      }[];
       avatars?: { officeId?: string }[];
     };
     const cell = Number(raw.grid?.cellSize) || 179;
     const offices = raw.offices ?? [];
-    const desks = [...offices, ...(raw.cubicles ?? [])].map((desk) => ({
-      id: String(desk.id),
-      col: Number(desk.col) || 0,
-      row: Number(desk.row) || 0,
-      cols: Number(desk.cols) || 1,
-      rows: Number(desk.rows) || 1,
-    }));
+    const desks = [...offices, ...(raw.cubicles ?? [])].map((desk) => footprintOf(desk));
+    const footprints = new Map(desks.map((desk) => [desk.id, desk]));
+    const legend = raw.legend ?? {};
+    const lines = raw.cells ?? [];
+    for (let row = 0; row < lines.length; row++) {
+      const line = lines[row] ?? "";
+      for (let col = 0; col < line.length; col++) {
+        const ch = line[col] ?? "";
+        const kind = legend[ch] ?? (ch === "u" ? "cube" : "");
+        if (kind !== "cube") continue;
+        let covered = false;
+        for (const fp of footprints.values()) {
+          if (!cellInsideFootprint(col, row, fp)) continue;
+          if (fp.id.startsWith("cube") || fp.id.startsWith("cubicle")) {
+            covered = true;
+            break;
+          }
+        }
+        if (covered) continue;
+        const id = `cube_${col}_${row}`;
+        if (footprints.has(id)) continue;
+        footprints.set(id, { id, col, row, cols: 1, rows: 1, rot: 0 });
+      }
+    }
     const officeIds = offices.map((desk) => String(desk.id)).filter(Boolean);
     // Plate avatars are not occupants. Floor 2 opens only from real claims.
-    return { cell, desks, officeIds, fixtureIds: [] as string[] };
+    // Chat desks stay the plate lists. Derived cubes are for Private blocking only.
+    return { cell, desks, footprints, officeIds, fixtureIds: [] as string[] };
   } catch {
-    return { cell: 179, desks: [], officeIds: [], fixtureIds: [] };
+    return { cell: 179, desks: [], footprints: new Map(), officeIds: [], fixtureIds: [] };
   }
 }
 
-const { cell: CELL, desks: DESKS, officeIds: OFFICE_IDS, fixtureIds: FIXTURE_IDS } = loadDeskFootprints();
+const {
+  cell: CELL,
+  desks: DESKS,
+  footprints: FOOTPRINTS,
+  officeIds: OFFICE_IDS,
+  fixtureIds: FIXTURE_IDS,
+} = loadDeskFootprints();
 
 type ConfFootprint = { id: string; col: number; row: number; cols: number; rows: number };
 
@@ -226,6 +300,147 @@ function peerDesk(peer: Peer) {
   const col = peer.col ?? Math.floor(peer.x / CELL);
   const row = peer.row ?? Math.floor(peer.y / CELL);
   return deskAt(col, row);
+}
+
+function claimCovering(roomId: string, floor: number, col: number, row: number) {
+  for (const claim of claimsOf(roomId).values()) {
+    if (claimFloor(claim) !== floor) continue;
+    const fp = FOOTPRINTS.get(claim.deskId);
+    if (!fp || !cellInsideFootprint(col, row, fp)) continue;
+    return claim;
+  }
+  return undefined;
+}
+
+function releasePrivateVisitor(
+  room: Map<string, Slot>,
+  claim: Claim,
+  peerId: string,
+) {
+  if (claim.privacy !== "private" || claim.peerId === peerId) return;
+  if (!claim.admitted?.includes(peerId)) return;
+  claim.admitted = claim.admitted.filter((id) => id !== peerId);
+  broadcastFloor(room, claimFloor(claim), null, { type: "claim", claim });
+}
+
+function forgetPrivateVisitors(room: Map<string, Slot>, roomId: string, peerId: string) {
+  for (const claim of claimsOf(roomId).values()) releasePrivateVisitor(room, claim, peerId);
+}
+
+function snapshotPrivate(room: Map<string, Slot>, claim: Claim) {
+  const floor = claimFloor(claim);
+  const fp = FOOTPRINTS.get(claim.deskId);
+  const ids: string[] = [];
+  if (fp) {
+    for (const slot of room.values()) {
+      if (peerFloor(slot.peer) !== floor) continue;
+      const { col, row } = peerCell(slot.peer);
+      if (!cellInsideFootprint(col, row, fp)) continue;
+      ids.push(slot.peer.id);
+    }
+  }
+  claim.privacy = "private";
+  claim.admitted = clampAdmitted(ids, claim.peerId);
+}
+
+function kickPoint(roomId: string, floor: number, peerId: string, desk: DeskFootprint) {
+  const primary = doorOutsideCell(desk);
+  const cols = desk.cols || 1;
+  const rows = desk.rows || 1;
+  const midC = desk.col + Math.floor((cols - 1) / 2);
+  const midR = desk.row + Math.floor((rows - 1) / 2);
+  const candidates = [
+    primary,
+    { col: midC, row: desk.row - 1 },
+    { col: midC, row: desk.row + rows },
+    { col: desk.col - 1, row: midR },
+    { col: desk.col + cols, row: midR },
+  ];
+  for (const spot of candidates) {
+    if (cellInsideFootprint(spot.col, spot.row, desk)) continue;
+    const other = claimCovering(roomId, floor, spot.col, spot.row);
+    if (other && !canStayInPrivate(other, peerId)) continue;
+    return { x: (spot.col + 0.5) * CELL, y: (spot.row + 0.5) * CELL };
+  }
+  return { x: (primary.col + 0.5) * CELL, y: (primary.row + 0.5) * CELL };
+}
+
+function kickFromPrivate(
+  room: Map<string, Slot>,
+  roomId: string,
+  slot: Slot,
+  claim: Claim,
+) {
+  releaseSeat(roomId, slot.peer.id);
+  const fp = FOOTPRINTS.get(claim.deskId);
+  const hall = fp
+    ? kickPoint(roomId, claimFloor(claim), slot.peer.id, fp)
+    : { x: slot.peer.x, y: slot.peer.y + CELL };
+  slot.peer.x = hall.x;
+  slot.peer.y = hall.y;
+  slot.peer.col = Math.floor(hall.x / CELL);
+  slot.peer.row = Math.floor(hall.y / CELL);
+  slot.peer.pose = "stand";
+  delete slot.peer.seatId;
+  delete slot.peer.seatY;
+  send(slot.ws, { type: "office-kick", deskId: claim.deskId });
+  broadcastFloor(room, peerFloor(slot.peer), null, {
+    type: "state",
+    id: slot.peer.id,
+    ...poseOf(slot.peer),
+  });
+}
+
+/** Drop visitors who stepped out. Kick anyone else who is inside a Private office. */
+function settlePrivate(
+  room: Map<string, Slot>,
+  roomId: string,
+  slot: Slot,
+  prevFloor: number,
+  prevCol: number,
+  prevRow: number,
+) {
+  const floor = peerFloor(slot.peer);
+  const col = Math.floor(slot.peer.x / CELL);
+  const row = Math.floor(slot.peer.y / CELL);
+  slot.peer.col = col;
+  slot.peer.row = row;
+  const prev = claimCovering(roomId, prevFloor, prevCol, prevRow);
+  const next = claimCovering(roomId, floor, col, row);
+  if (prev?.privacy === "private" && (prev.deskId !== next?.deskId || claimFloor(prev) !== floor)) {
+    releasePrivateVisitor(room, prev, slot.peer.id);
+  }
+  if (!next || canStayInPrivate(next, slot.peer.id)) return false;
+  kickFromPrivate(room, roomId, slot, next);
+  return true;
+}
+
+function sweepPrivateOffices() {
+  for (const [buildingId, room] of rooms) {
+    for (const claim of [...claimsOf(buildingId).values()]) {
+      if (claim.privacy !== "private") continue;
+      const fp = FOOTPRINTS.get(claim.deskId);
+      if (!fp) continue;
+      const floor = claimFloor(claim);
+      const inside = new Set<string>();
+      const intruders: Slot[] = [];
+      for (const slot of room.values()) {
+        if (peerFloor(slot.peer) !== floor) continue;
+        const { col, row } = peerCell(slot.peer);
+        if (!cellInsideFootprint(col, row, fp)) continue;
+        inside.add(slot.peer.id);
+        if (!canStayInPrivate(claim, slot.peer.id)) intruders.push(slot);
+      }
+      for (const slot of intruders) kickFromPrivate(room, buildingId, slot, claim);
+      const prev = claim.admitted ?? [];
+      const next = prev.filter((id) => id === claim.peerId || inside.has(id));
+      if (!next.includes(claim.peerId)) next.unshift(claim.peerId);
+      if (next.length !== prev.length) {
+        claim.admitted = next;
+        broadcastFloor(room, floor, null, { type: "claim", claim });
+      }
+    }
+  }
 }
 
 function conferenceAt(col: number, row: number) {
@@ -487,7 +702,7 @@ function canReceiveWhisper(slot: Slot, roomId: string, fromId: string) {
   if (!slot.chatAvailable) return false;
   if (slot.blocked.has(fromId)) return false;
   const claim = claimOfPeer(roomId, slot.peer.id);
-  if (claim && (claim.privacy === "busy" || claim.privacy === "focus")) return false;
+  if (claim && blocksWhispers(claim.privacy)) return false;
   return true;
 }
 
@@ -643,6 +858,7 @@ function dropSlot(roomId: string, room: Map<string, Slot>, peerId: string) {
   const slot = room.get(peerId);
   if (!slot) return;
   const floor = peerFloor(slot.peer);
+  forgetPrivateVisitors(room, roomId, peerId);
   endWhispersFor(room, roomId, peerId, "left");
   room.delete(peerId);
   const claims = claimsOf(roomId);
@@ -740,7 +956,12 @@ function attachRoom(httpServer: Server) {
     });
   };
   httpServer.prependListener("upgrade", onUpgrade);
-  if (!confSweep) confSweep = setInterval(sweepConferenceRooms, 4000);
+  if (!confSweep) {
+    confSweep = setInterval(() => {
+      sweepConferenceRooms();
+      sweepPrivateOffices();
+    }, 4000);
+  }
   if (!linkSweep) {
     linkSweep = setInterval(sweepLinks, PING_MS);
     if (typeof linkSweep === "object" && linkSweep && "unref" in linkSweep) linkSweep.unref();
@@ -797,6 +1018,9 @@ function attachRoom(httpServer: Server) {
             for (const claim of claims.values()) {
               if (claim.peerId !== selfId) continue;
               claim.peerId = id;
+              if (claim.admitted?.includes(selfId)) {
+                claim.admitted = claim.admitted.map((pid) => (pid === selfId ? id : pid));
+              }
               claim.name = name;
               syncClaimAd(claim);
               broadcastFloor(room!, claimFloor(claim), null, { type: "claim", claim });
@@ -853,6 +1077,8 @@ function attachRoom(httpServer: Server) {
           ...(signedIn ? userBlocks(id) : []),
           ...(sameLink && existing ? existing.blocked : []),
         ]);
+        const helloFrom = existing ? peerCell(existing.peer) : peerCell(peer);
+        const helloFloor = existing ? peerFloor(existing.peer) : floor;
         room!.set(id, { ws, peer, signedIn, blocked, chatAvailable });
         if (previous) previous.close(REPLACED, "replaced");
         const blockedBy = new Set(signedIn ? whoBlocked(id) : []);
@@ -894,6 +1120,8 @@ function attachRoom(httpServer: Server) {
         } else {
           broadcastFloor(room!, floor, id, { type: "join", peer });
         }
+        const joined = room!.get(id);
+        if (joined) settlePrivate(room!, roomId, joined, helloFloor, helloFrom.col, helloFrom.row);
         return;
       }
       const slot = selfId ? room!.get(selfId) : undefined;
@@ -927,6 +1155,7 @@ function attachRoom(httpServer: Server) {
         const mine = [...claimsOf(roomId).values()].find((claim) => claim.peerId === selfId);
         if (!mine) return;
         mine.privacy = "busy";
+        delete mine.admitted;
         const floor = claimFloor(mine);
         broadcastFloor(room!, floor, null, { type: "claim", claim: mine });
         broadcastFloor(room!, floor, null, { type: "boot", deskId: mine.deskId, peerId: selfId });
@@ -938,17 +1167,19 @@ function attachRoom(httpServer: Server) {
         const y = num(msg.y, slot.peer.y);
         const facing =
           msg.facing !== undefined ? num(msg.facing, slot.peer.facing) : slot.peer.facing;
+        const prevFloor = peerFloor(slot.peer);
+        const prev = peerCell(slot.peer);
         slot.peer.x = x;
         slot.peer.y = y;
         slot.peer.facing = facing;
-        slot.peer.col = Math.floor(x / CELL);
-        slot.peer.row = Math.floor(y / CELL);
+        if (settlePrivate(room!, roomId, slot, prevFloor, prev.col, prev.row)) return;
         broadcastFloor(room!, peerFloor(slot.peer), selfId, { type: "move", id: selfId, x, y, facing });
         return;
       }
       if (msg.type === "state") {
         if (!allowRate(moveRate, ws, MOVE_LIMIT, MOVE_WINDOW_MS)) return;
         const floor = peerFloor(slot.peer);
+        const prev = peerCell(slot.peer);
         const next = poseOf(msg);
         if (next.pose === "sit" && next.seatId) {
           if (!takeSeat(roomId, floor, selfId, next.seatId)) {
@@ -964,6 +1195,7 @@ function attachRoom(httpServer: Server) {
           color: slot.peer.color,
           floor,
         });
+        if (settlePrivate(room!, roomId, slot, floor, prev.col, prev.row)) return;
         broadcastFloor(room!, floor, selfId, { type: "state", id: selfId, ...poseOf(slot.peer) });
         return;
       }
@@ -1016,6 +1248,9 @@ function attachRoom(httpServer: Server) {
           send(ws, { type: "error", message: "no floor" });
           return;
         }
+        const fromCell = peerCell(slot.peer);
+        const covered = claimCovering(roomId, from, fromCell.col, fromCell.row);
+        if (covered) releasePrivateVisitor(room!, covered, selfId);
         broadcastFloor(room!, from, selfId, { type: "leave", id: selfId });
         releaseSeat(roomId, selfId);
         slot.peer.floor = target;
@@ -1128,7 +1363,12 @@ function attachRoom(httpServer: Server) {
         const privacy = clampPrivacy(msg.privacy);
         for (const claim of claimsOf(roomId).values()) {
           if (claim.peerId !== selfId) continue;
-          claim.privacy = privacy;
+          if (claim.privacy === privacy) continue;
+          if (privacy === "private") snapshotPrivate(room!, claim);
+          else {
+            claim.privacy = privacy;
+            delete claim.admitted;
+          }
           const floor = claimFloor(claim);
           broadcastFloor(room!, floor, null, { type: "claim", claim });
           if (privacy === "focus" || privacy === "busy") {
@@ -1311,7 +1551,7 @@ function attachRoom(httpServer: Server) {
         const floor = peerFloor(slot.peer);
         const claim = deskId ? claimsOf(roomId).get(claimKey(floor, deskId)) : undefined;
         if (!claim || claim.peerId === selfId) return;
-        if (claim.privacy === "open" || claim.privacy === "focus") return;
+        if (claim.privacy !== "busy") return;
         const occ = room!.get(claim.peerId);
         if (!occ || occ.blocked.has(selfId) || peerFloor(occ.peer) !== floor) return;
         send(occ.ws, {
@@ -1434,6 +1674,7 @@ function attachRoom(httpServer: Server) {
         const accept = Boolean(msg.accept);
         if (accept) {
           mine.privacy = "open";
+          delete mine.admitted;
           broadcastFloor(room!, claimFloor(mine), null, { type: "claim", claim: mine });
         }
         const reply = {

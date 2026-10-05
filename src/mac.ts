@@ -1,6 +1,6 @@
 import type { AuthProvider } from "./authProviders";
 import { LOOK_PARTS, randomLook, type AvatarLook, type LookPart } from "./avatarLook";
-import type { ChatChannel, Privacy } from "./protocol";
+import { privacyLabel, type ChatChannel, type Privacy } from "./protocol";
 import { timezoneLabel } from "./conferenceReserve";
 import { chatSoundOn, playChatSound, playUiSound, setChatSound, setUiSound, uiSoundOn } from "./chatSounds";
 import { XP_PER_MINUTE, xpRateLabel } from "./xp";
@@ -833,12 +833,19 @@ export function attachMac(opts: {
       privacyBtns.forEach((btn) => {
         btn.checked = btn.value === privacy;
       });
+      if (privacy !== "focus" && privacy !== "private") return;
+      alertEl.hidden = true;
+      knockFrom = "";
+      for (let i = inbox.length - 1; i >= 0; i--) {
+        if (inbox[i].kind === "knock") inbox.splice(i, 1);
+      }
+      paintInbox();
     },
     setHasDesk(on: boolean) {
       claimed = on;
       root.hidden = false;
       privacyHint.textContent = on
-        ? "This is what the floor sees."
+        ? "Busy, Focus, and Private ignore new whispers. Private keeps whoever is already inside and blocks everyone else."
         : "Claim an office to set this.";
       privacyBtns.forEach((btn) => {
         btn.disabled = !on;
@@ -875,7 +882,7 @@ export function attachMac(opts: {
     },
     askSignIn,
     showKnock(fromName: string, fromId: string) {
-      if (opts.getPrivacy() === "focus") return;
+      if (opts.getPrivacy() === "focus" || opts.getPrivacy() === "private") return;
       if (inbox.some((item) => item.kind === "knock" && item.fromId === fromId)) return;
       inbox.push({ kind: "knock", fromId, fromName, text: `${fromName} is at your door.` });
       paintInbox();
@@ -1005,7 +1012,7 @@ export function attachMac(opts: {
       for (const row of rows) {
         const el = document.createElement("div");
         el.className = "mac-floor-row" + (row.self ? " self" : "") + (row.blocked ? " blocked" : "");
-        const mode = row.privacy === "focus" ? "Focus" : row.privacy === "busy" ? "Busy" : "Open";
+        const mode = privacyLabel(row.privacy);
         el.innerHTML =
           `<div class="mac-floor-main"><div class="mac-floor-who"><b></b><span></span></div><div class="mac-floor-time"></div></div><div class="mac-floor-actions"></div>`;
         const label = row.company ? `${row.name} · ${row.company}` : row.name;

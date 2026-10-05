@@ -4,6 +4,7 @@ import { localPlateFor } from "./createOffice";
 import { setHingedDoorOpen } from "./createPlate";
 import { applyItemTransform } from "./loadFurniture";
 import { adsOnGlass, applyOfficeAd, setOfficeAdVisible, TV_ON_PREFIX } from "./officeAds";
+import { clampAdmitted } from "./privateOffice";
 import { clampPrivacy, type Claim, type DeskKind, type Privacy } from "./protocol";
 import type { FloorPlate, FurnitureItem, OfficeInstance } from "./types";
 
@@ -337,7 +338,7 @@ export function applyConferencePlate(
   plate.userData.conferencePlate = true;
 }
 
-function drawDoorPlate(canvas: HTMLCanvasElement, name: string, zone?: string) {
+function drawDoorPlate(canvas: HTMLCanvasElement, name: string, sub?: string, locked = false) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const w = canvas.width;
@@ -345,23 +346,30 @@ function drawDoorPlate(canvas: HTMLCanvasElement, name: string, zone?: string) {
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = "#3a2a18";
   ctx.fillRect(0, 0, w, h);
-  ctx.fillStyle = "#d4b06a";
+  ctx.fillStyle = locked ? "#a85a52" : "#d4b06a";
   ctx.fillRect(8, 8, w - 16, h - 16);
-  ctx.fillStyle = "#2a1c10";
+  ctx.fillStyle = locked ? "#2a1214" : "#2a1c10";
   ctx.fillRect(14, 14, w - 28, h - 28);
   ctx.fillStyle = "#f3e6c8";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  if (zone) {
+  if (sub) {
     ctx.font = "700 48px ui-sans-serif, system-ui, sans-serif";
     ctx.fillText(name.slice(0, 16).toUpperCase(), w / 2, h * 0.38);
-    ctx.font = "700 40px ui-sans-serif, system-ui, sans-serif";
-    ctx.fillStyle = "#f3e6c8";
-    ctx.fillText(zone, w / 2, h * 0.7);
+    ctx.font = "700 36px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillStyle = locked ? "#ffb4a8" : "#f3e6c8";
+    ctx.fillText(sub.slice(0, 26), w / 2, h * 0.7);
   } else {
     ctx.font = "700 52px ui-sans-serif, system-ui, sans-serif";
     ctx.fillText(name.slice(0, 16).toUpperCase(), w / 2, h / 2 + 2);
   }
+}
+
+function noteClaimPrivacy(claim: Claim) {
+  claim.privacy = clampPrivacy(claim.privacy);
+  claim.since = Number(claim.since) || Date.now();
+  if (claim.privacy === "private") claim.admitted = clampAdmitted(claim.admitted, claim.peerId);
+  else delete claim.admitted;
 }
 
 function windowGlasses(group: THREE.Object3D) {
@@ -791,14 +799,12 @@ export function attachDesks(opts: {
       setHingedDoorOpen(door, open ? 0.38 : 0);
       door.updateWorldMatrix(true, true);
       const zone = zoneCity(claim?.timezone);
-      const plate = ensureDoorPlate(door, Boolean(zone));
+      const locked = occupied && privacy === "private";
+      const sub = [locked ? "PRIVATE" : "", zone].filter(Boolean).join(" · ");
+      const plate = ensureDoorPlate(door, Boolean(sub));
       if (plate) {
         if (occupied && name) {
-          drawDoorPlate(
-            plate.userData.canvas as HTMLCanvasElement,
-            name,
-            zone,
-          );
+          drawDoorPlate(plate.userData.canvas as HTMLCanvasElement, name, sub || undefined, locked);
           (plate.userData.texture as THREE.CanvasTexture).needsUpdate = true;
           plate.visible = true;
         } else {
@@ -943,8 +949,7 @@ export function attachDesks(opts: {
       return null;
     },
     apply(claim: Claim) {
-      claim.privacy = clampPrivacy(claim.privacy);
-      claim.since = Number(claim.since) || Date.now();
+      noteClaimPrivacy(claim);
       const prev = [...claims.values()].find((entry) => entry.peerId === claim.peerId);
       if (prev && prev.deskId !== claim.deskId) {
         claims.delete(prev.deskId);
@@ -958,8 +963,7 @@ export function attachDesks(opts: {
     applyAll(list: Claim[]) {
       claims.clear();
       for (const claim of list) {
-        claim.privacy = clampPrivacy(claim.privacy);
-        claim.since = Number(claim.since) || Date.now();
+        noteClaimPrivacy(claim);
         claims.set(claim.deskId, claim);
       }
       for (const desk of desks.values()) paint(desk);

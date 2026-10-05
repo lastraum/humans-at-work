@@ -513,7 +513,7 @@ function startVisitor(bot, officeId, from) {
     if (msg.type === "claim" && msg.claim?.deskId === officeId && msg.claim?.peerId !== bot.id) {
       const privacy = msg.claim.privacy;
       if (privacy === "focus" || privacy === "busy") leave();
-      else later(500, goIn);
+      else if (privacy !== "private") later(500, goIn);
     }
     if (msg.type === "boot" && msg.deskId === officeId) leave();
   });
