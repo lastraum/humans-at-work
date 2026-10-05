@@ -3,20 +3,31 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
   background: #16122a;
   font-family: ui-sans-serif, system-ui, sans-serif;
+  touch-action: none;
+}
+
+body {
+  position: fixed;
+  inset: 0;
+  width: 100%;
 }
 
 #c {
   display: block;
   width: 100%;
   height: 100%;
+  touch-action: none;
 }
 
 #hud {
   position: fixed;
   left: 16px;
+  left: max(16px, env(safe-area-inset-left));
   top: 16px;
+  top: max(16px, env(safe-area-inset-top));
   z-index: 2;
   color: #f4f0e8;
   text-shadow: 0 1px 8px #000;
@@ -26,7 +37,9 @@ body {
 #hud-side {
   position: fixed;
   top: 16px;
+  top: max(16px, env(safe-area-inset-top));
   right: 16px;
+  right: max(16px, env(safe-area-inset-right));
   z-index: 4;
   display: flex;
   flex-direction: column;
@@ -596,7 +609,9 @@ body.editing #editor-dock {
 #mac-stack {
   position: fixed;
   right: 16px;
+  right: max(16px, env(safe-area-inset-right));
   bottom: 16px;
+  bottom: max(16px, env(safe-area-inset-bottom));
   z-index: 6;
   display: flex;
   flex-direction: column;
@@ -1172,6 +1187,14 @@ body.editing #mac-stack {
   font-weight: 700;
 }
 
+#mac input,
+#mac textarea,
+#conf-join input,
+#conf-reserve input {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 #mac-chat-input:disabled {
   opacity: 0.5;
 }
@@ -1467,10 +1490,13 @@ body.film #mac-account-in > p.mac-hint:first-of-type {
 #cam-pad {
   position: fixed;
   left: 24px;
+  left: max(24px, env(safe-area-inset-left));
   bottom: 24px;
+  bottom: max(24px, env(safe-area-inset-bottom));
   z-index: 4;
   width: 126px;
   height: 126px;
+  touch-action: none;
 }
 
 #cam-pad button {
@@ -1632,5 +1658,425 @@ body.film #mac-account-in > p.mac-hint:first-of-type {
   box-shadow: inset -1px -1px 0 #888, inset 1px 1px 0 #fff;
   font: inherit;
   cursor: pointer;
+}
+
+:root {
+  --vv-height: 100dvh;
+  --vv-offset-top: 0px;
+  --keyboard: 0px;
+  --mac-stack-h: 52px;
+}
+
+/* Phones, small tablets, and short landscape: workstation is a bottom sheet.
+   Wide desktop layouts stay on the rules above. */
+@media (max-width: 900px), ((max-height: 520px) and (max-width: 1100px)) {
+  #hud {
+    max-width: calc(100vw - 150px - env(safe-area-inset-left) - env(safe-area-inset-right));
+  }
+
+  #mac-stack {
+    left: max(8px, env(safe-area-inset-left));
+    right: max(8px, env(safe-area-inset-right));
+    bottom: calc(max(8px, env(safe-area-inset-bottom)) + var(--keyboard, 0px));
+    width: auto;
+    max-height: calc(
+      var(--vv-height, 100dvh) - var(--vv-offset-top, 0px) - max(8px, env(safe-area-inset-top)) -
+        max(8px, env(safe-area-inset-bottom)) - 8px
+    );
+    box-sizing: border-box;
+    padding: 0 4px 4px 0;
+    overflow: hidden;
+  }
+
+  #mac-stack > * {
+    min-height: 0;
+  }
+
+  #mac-peek:not([hidden]),
+  #person-card:not([hidden]),
+  #ad-visit:not([hidden]) {
+    width: auto;
+    align-self: stretch;
+    flex: 0 1 auto;
+    max-height: min(220px, 34dvh);
+    overflow: auto;
+    touch-action: pan-y;
+  }
+
+  #mac {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    overflow: hidden;
+    max-height: 100%;
+  }
+
+  #mac .mac-menubar {
+    display: none;
+  }
+
+  #mac .mac-body {
+    height: min(48dvh, 460px);
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: min(48dvh, 460px);
+    overflow: hidden;
+  }
+
+  .mac-icons {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    touch-action: pan-x;
+    scrollbar-width: thin;
+  }
+
+  .mac-icons button {
+    flex: 1 0 68px;
+    min-height: 48px;
+    padding: 6px 4px;
+    font-size: 11px;
+  }
+
+  .mac-panel,
+  .mac-chat-log,
+  .mac-floor-list,
+  .mac-help,
+  #day-end-card,
+  #claim-shift-card,
+  #conf-ask-card,
+  #guest-over-card,
+  #join-gate-card,
+  #conf-reserve-card,
+  #conf-join-card {
+    touch-action: pan-y;
+  }
+
+  .mac-chat-main {
+    flex-direction: column;
+    flex: 1 1 auto;
+    gap: 6px;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .mac-chat-nav {
+    flex: 0 1 auto;
+    flex-direction: column;
+    width: 100%;
+    min-height: 0;
+    max-height: 92px;
+  }
+
+  .mac-whisper-people {
+    flex: 0 0 auto;
+    flex-direction: row;
+    width: 100%;
+    max-height: 58px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    touch-action: pan-x;
+  }
+
+  .mac-whisper-thread {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 108px;
+    max-width: 168px;
+    border-bottom: 0;
+    border-right: 1px dotted #888;
+  }
+
+  .mac-whisper-thread:last-child {
+    border-right: 0;
+  }
+
+  .mac-chat-stage {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  #mac-chat-form {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    margin-top: 4px;
+    padding-top: 4px;
+    background: #dddddd;
+  }
+
+  .mac-request-row,
+  .mac-floor-actions,
+  .mac-request-btns {
+    flex-wrap: wrap;
+  }
+
+  .mac-floor-actions {
+    justify-content: flex-start;
+  }
+
+  #day-end,
+  #claim-shift,
+  #conf-ask,
+  #guest-over,
+  #join-gate,
+  #conf-reserve,
+  #conf-join {
+    padding:
+      max(12px, env(safe-area-inset-top))
+      max(12px, env(safe-area-inset-right))
+      max(12px, env(safe-area-inset-bottom))
+      max(12px, env(safe-area-inset-left));
+    box-sizing: border-box;
+  }
+
+  #day-end-card,
+  #claim-shift-card,
+  #conf-ask-card,
+  #guest-over-card,
+  #join-gate-card,
+  #conf-reserve-card,
+  #conf-join-card {
+    width: min(400px, 100%);
+    max-width: 100%;
+    max-height: calc(
+      var(--vv-height, 100dvh) - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)
+    );
+    overflow: auto;
+    box-sizing: border-box;
+  }
+
+  #mac-chat-input,
+  #mac-name,
+  #mac-company,
+  #mac-profile-url,
+  #conf-join-code,
+  #conf-reserve-day,
+  .mac-field input {
+    font-size: 16px;
+  }
+
+  #cam-pad {
+    left: max(10px, env(safe-area-inset-left));
+    bottom: calc(var(--mac-stack-h, 52px) + max(8px, env(safe-area-inset-bottom)) + 10px + var(--keyboard, 0px));
+  }
+
+  html.keyboard-open #cam-pad,
+  html.sheet-tall #cam-pad {
+    visibility: hidden;
+    pointer-events: none;
+  }
+}
+
+@media (max-width: 900px) and (min-height: 521px) {
+  .mac-icons {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+
+  .mac-icons button {
+    flex: 1 1 30%;
+    min-width: 0;
+  }
+}
+
+@media (max-height: 520px) and (max-width: 1100px) {
+  #mac .mac-body {
+    height: min(54dvh, 240px);
+    max-height: min(54dvh, 240px);
+  }
+
+  .mac-chat-nav {
+    flex-direction: row;
+    align-items: center;
+    max-height: 48px;
+    gap: 6px;
+  }
+
+  .mac-whisper-people {
+    flex: 1 1 auto;
+    max-height: 44px;
+  }
+
+  .mac-chat-nav .mac-check {
+    flex: 0 0 auto;
+    margin: 0;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  #cam-pad {
+    transform: scale(0.75);
+    transform-origin: top right;
+  }
+
+  #mac-peek:not([hidden]),
+  #person-card:not([hidden]),
+  #ad-visit:not([hidden]) {
+    max-height: min(140px, 32dvh);
+  }
+
+  #cam-pad {
+    top: max(8px, env(safe-area-inset-top));
+    right: max(8px, env(safe-area-inset-right));
+    left: auto;
+    bottom: auto;
+  }
+}
+
+@media (max-height: 400px) and (max-width: 1100px) {
+  #mac .mac-body {
+    height: 132px;
+    max-height: 132px;
+  }
+
+  .mac-icons button {
+    min-height: 36px;
+    padding: 2px 4px;
+  }
+
+  .mac-icon {
+    margin-bottom: 0;
+  }
+
+  .mac-chat-nav,
+  .mac-whisper-people {
+    max-height: 40px;
+  }
+
+  #mac-chat-form button {
+    min-height: 36px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+
+  #cam-pad {
+    transform: scale(0.82);
+    transform-origin: top right;
+  }
+}
+
+@media (pointer: coarse) {
+  .mac-title {
+    height: auto;
+    min-height: 36px;
+    padding: 6px 8px;
+    cursor: pointer;
+  }
+
+  .mac-close {
+    position: relative;
+    width: 22px;
+    height: 18px;
+  }
+
+  .mac-close::after {
+    content: "";
+    position: absolute;
+    inset: -14px -12px;
+  }
+
+  .mac-icons button,
+  .mac-whisper-thread-who,
+  #mac-chat-form button,
+  .mac-request-btns button,
+  .mac-floor-goto,
+  .mac-floor-block,
+  .mac-floor-whisper,
+  .person-card-actions button,
+  .mac-swatch {
+    touch-action: manipulation;
+  }
+
+  .mac-swatch {
+    width: 28px;
+    height: 28px;
+  }
+
+  #mac-privacy .mac-well label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    margin: 0;
+    padding: 4px 2px;
+  }
+
+  #mac-privacy .mac-well label input {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 auto;
+  }
+
+  .mac-check {
+    min-height: 40px;
+  }
+
+  #join-enter,
+  #join-guest,
+  #join-signin,
+  #join-back,
+  #claim-shift-go,
+  #claim-shift-no,
+  #day-end-go,
+  #day-end-home,
+  #day-end-stay,
+  #day-end-ok,
+  #day-end-floors button,
+  #guest-over-signin,
+  #guest-over-leave,
+  #guest-over-back,
+  #conf-ask-walk,
+  #conf-ask-go,
+  #conf-ask-no,
+  #conf-reserve-go,
+  #conf-reserve-no,
+  #conf-join-go,
+  #conf-join-reserve,
+  #conf-join-no,
+  .auth-provider,
+  #mac-boot,
+  #mac-logout,
+  #mac-name-save,
+  #mac-ad-save,
+  #mac-chat-form button,
+  .person-card-actions button,
+  .mac-floor-goto,
+  .mac-floor-block,
+  .mac-floor-whisper,
+  .mac-request-btns button {
+    box-sizing: border-box;
+    min-height: 44px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  #mac-chat-input,
+  #mac-name,
+  #mac-company,
+  #mac-profile-url,
+  #conf-join-code,
+  #conf-reserve-day,
+  .mac-field input {
+    font-size: 16px;
+  }
+}
+
+html.keyboard-open #day-end,
+html.keyboard-open #claim-shift,
+html.keyboard-open #conf-ask,
+html.keyboard-open #guest-over,
+html.keyboard-open #join-gate,
+html.keyboard-open #conf-reserve,
+html.keyboard-open #conf-join {
+  align-items: flex-start;
+}
+
+@media (max-height: 400px) and (max-width: 1100px) {
+  #mac-chat-form button {
+    min-height: 36px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
 }
 

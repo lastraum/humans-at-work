@@ -51,7 +51,7 @@ export function attachPlayer(opts: {
   const walk = attachLocomotion({ plate, object: player, avatar, colliderRoots, inside });
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
-  const down = { x: 0, y: 0 };
+  const down = { x: 0, y: 0, touch: false };
   let poseAge = 0;
   let pendingSit: { x: number; y: number; facing: number; seatId?: string; seatY?: number } | null =
     null;
@@ -69,15 +69,24 @@ export function attachPlayer(opts: {
   const shell = ground.getObjectByName("roof") ?? roof;
   if (shell) shell.visible = false;
 
-  canvas.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-    down.x = event.clientX;
-    down.y = event.clientY;
-  });
+  canvas.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (event.button !== 0) return;
+      down.x = event.clientX;
+      down.y = event.clientY;
+      down.touch = event.pointerType === "touch";
+      if (!down.touch) return;
+      event.preventDefault();
+      canvas.setPointerCapture(event.pointerId);
+    },
+    { passive: false },
+  );
 
   canvas.addEventListener("pointerup", (event) => {
     if (event.button !== 0) return;
-    if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > 8) return;
+    const slop = event.pointerType === "touch" || down.touch ? 24 : 8;
+    if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > slop) return;
     if (isBlocked()) return;
     const rect = canvas.getBoundingClientRect();
     pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
